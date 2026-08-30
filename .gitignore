@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp/
+.uv-cache/
+.venv/
+.env
+.env.*
+!.env.example
+dist/
+build/
+*.egg-info/
+
+# Generated project run-state (artifacts, task history, approvals from
+# exercising the tool on itself) -- not source code.
+.design/

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Design Pipeline Review</title>
+    <link rel="stylesheet" href="/review-assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">✦</span><span>Design Pipeline</span></div>
+        <p class="sidebar-label">REVIEW WORKSPACE</p>
+        <nav class="nav" aria-label="Workspace sections">
+          <button class="nav-link active" data-view="overview">Overview</button>
+          <button class="nav-link" data-view="system">System model</button>
+          <button class="nav-link" data-view="architecture">Architecture</button>
+          <button class="nav-link" data-view="mockups">Mockups</button>
+          <button class="nav-link" data-view="history">History</button>
+        </nav>
+        <div class="sidebar-footer"><span id="workflow-status" class="status-pill muted">Loading</span><button id="refresh-button" class="text-button">Refresh</button></div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar"><div><p class="eyebrow">LOCAL DESIGN REVIEW</p><h1 id="project-name">Design Pipeline</h1></div><div class="topbar-actions"><button id="initialize-button" class="secondary-button">Initialize project</button><button id="run-button" class="primary-button">Generate / resume</button><button id="live-run-button" class="secondary-button">Regenerate with live AI</button></div></header>
+
+        <section id="notice" class="notice hidden" role="status"></section>
+
+        <section id="overview-view" class="view active">
+          <div class="hero-card">
+            <div><p class="eyebrow">START WITH REQUIREMENTS</p><h2>Upload a business requirements document</h2><p>Use a Word document, Markdown, plain text, or reStructuredText. The pipeline extracts the text as its BRD input, then generates the business, solution, and system models.</p></div>
+            <div class="upload-control"><input id="document-input" type="file" accept=".docx,.md,.markdown,.txt,.rst,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small></div>
+          </div>
+          <div class="stat-grid" id="stats"></div>
+          <div class="section-heading"><div><p class="eyebrow">GENERATED ARTIFACTS</p><h2>Design trace</h2></div><p>Open any artifact to preview its data, requirements, version history, and review actions.</p></div>
+          <div id="artifact-cards" class="artifact-grid empty-state">No artifacts yet. Upload a document and start generation.</div>
+        </section>
+
+        <section id="system-view" class="view">
+          <div class="section-heading"><div><p class="eyebrow">SYSTEM UNDERSTANDING</p><h2>System model</h2></div><p>Trace business requirements into capabilities, services, screens, and permissions.</p></div>
+          <div id="system-model" class="model-layout empty-state">Generate the system model to see the traceability map.</div>
+        </section>
+
+        <section id="architecture-view" class="view">
+          <div class="section-heading"><div><p class="eyebrow">SOLUTION DESIGN</p><h2>Architecture and diagrams</h2></div><p>Architecture recommendations are shown as an interactive component chart.</p></div>
+          <div id="architecture-model" class="model-layout empty-state">Approve the system model to generate architecture recommendations.</div>
+        </section>
+
+        <section id="mockups-view" class="view">
+          <div class="section-heading"><div><p class="eyebrow">INTERACTION DESIGN</p><h2>Mockup navigator</h2></div><p>Browse the generated mockup specification as a lightweight interactive screen preview.</p></div>
+          <div id="mockup-model" class="model-layout empty-state">Approve the architecture to generate the mockup specification.</div>
+        </section>
+
+        <section id="history-view" class="view">
+          <div class="section-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>Generation history</h2></div><p>Every generation, approval, comment, retry, and handoff is recorded here.</p></div>
+          <div id="history-list" class="history-list empty-state">No recorded events yet.</div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="artifact-dialog" class="artifact-dialog">
+      <div class="dialog-header"><div><p id="dialog-type" class="eyebrow"></p><h2 id="dialog-title">Artifact preview</h2></div><button id="close-dialog" class="icon-button" aria-label="Close preview">×</button></div>
+      <div id="dialog-meta" class="meta-row"></div>
+      <div id="dialog-content" class="preview-content"></div>
+      <div class="dialog-actions"><button id="approve-button" class="primary-button">Approve</button><button id="changes-button" class="secondary-button">Request changes</button><button id="retry-button" class="secondary-button">Retry generation</button></div>
+      <form id="comment-form" class="comment-form"><label for="comment-text">Review comment</label><div><textarea id="comment-text" placeholder="Describe what should change…"></textarea><button class="secondary-button" type="submit">Add comment</button></div></form>
+      <div><p class="eyebrow">VERSION HISTORY</p><div id="version-list" class="version-list"></div></div>
+    </dialog>
+    <script src="/review-assets/app.js"></script>
+  </body>
+</html>
