@@ -95,6 +95,82 @@ class SystemModel(BaseModel):
     traceability: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class DataField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    type: str = Field(min_length=1)  # free text: "string", "date", "enum(open,closed)", etc.
+    description: str = ""
+
+
+class DataEntity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)  # same naming convention as system-model.entities
+    description: str = ""
+    fields: list[DataField] = Field(default_factory=list)
+
+
+class DataRelationship(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_entity: str = Field(min_length=1)
+    to_entity: str = Field(min_length=1)
+    cardinality: str = "one-to-many"  # "one-to-one" | "one-to-many" | "many-to-many"
+    label: str = ""  # e.g. "generates", "contains"
+
+
+class DataModel(BaseModel):
+    """The structured entity-relationship model: the source of truth for
+    entities/fields/relationships. The ERD Mermaid diagram is always
+    derived from this in code (see erd.py), never independently authored
+    by a model -- so the diagram can never drift out of sync with the
+    data it's supposed to represent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entities: list[DataEntity] = Field(default_factory=list)
+    relationships: list[DataRelationship] = Field(default_factory=list)
+
+
+class MockupScreen(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    purpose: str = ""
+    key_elements: list[str] = Field(default_factory=list)
+    workflow_link: str = ""
+    # Matches an id from architecture-model.workflows, or the reserved
+    # "__landing__" for the app-launcher-style entry screen. Empty for
+    # back-compat with older mockup-spec versions that predate the
+    # workflow-enumeration step.
+    workflow_id: str = ""
+    # For CRUD screens: matches a name from system-model.entities verbatim.
+    # A screen may carry both workflow_id (its place in a user journey)
+    # and entity_id (the entity it operates on). Empty for pure workflow
+    # screens or the landing screen.
+    entity_id: str = ""
+
+
+class MockupSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = "interactive-mockup-specification"
+    screens: list[MockupScreen] = Field(default_factory=list)
+    primary_flow: list[str] = Field(default_factory=list)
+    synthetic_data: bool = True
+    feedback_applied: list[str] = Field(default_factory=list)
+    instruction: str | None = None
+
+
+class MockupPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    screen_id: str = Field(min_length=1)
+    html: str = Field(min_length=1)
+
+
 class ArtifactReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -28,6 +28,7 @@ class DocumentReader:
         ".txt": "text/plain",
         ".rst": "text/x-rst",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".pdf": "application/pdf",
     }
 
     def __init__(self, project_root: Path):
@@ -55,6 +56,8 @@ class DocumentReader:
             raise ValueError(f"unsupported document type {suffix or '<none>'}; supported types: {supported}")
         if suffix == ".docx":
             content = self._extract_docx_text(data)
+        elif suffix == ".pdf":
+            content = self._extract_pdf_text(data)
         else:
             try:
                 content = data.decode("utf-8")
@@ -81,6 +84,20 @@ class DocumentReader:
                 paragraphs.append(text.strip())
         return "\n\n".join(paragraphs)
 
+    @staticmethod
+    def _extract_pdf_text(data: bytes) -> str:
+        """Extract text from a PDF document across all readable pages."""
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            pages = [page.extract_text() or "" for page in reader.pages]
+        except Exception as exc:
+            raise ValueError(f"invalid .pdf file; PDF document content could not be read: {exc}") from exc
+        content = "\n\n".join(p.strip() for p in pages if p.strip())
+        if not content.strip():
+            raise ValueError("PDF document contains no readable text (it may be scanned or image-only)")
+        return content
+
     def ingest_brd(self, source: Path) -> DocumentSource:
         document = self.read(source)
         destination = self.project_root / ".design" / "input" / "BRD.md"
@@ -95,8 +112,9 @@ class DocumentReader:
 
     def ingest_text(self, content: str, filename: str = "BRD.md") -> DocumentSource:
         suffix = Path(filename).suffix.lower()
-        if suffix == ".docx":
-            raise ValueError("Word documents must be uploaded as binary content")
+        if suffix in {".docx", ".pdf"}:
+            format_name = "Word documents" if suffix == ".docx" else "PDF documents"
+            raise ValueError(f"{format_name} must be uploaded as binary content")
         if suffix not in self._SUPPORTED:
             supported = ", ".join(sorted(self._SUPPORTED))
             raise ValueError(f"unsupported document type {suffix or '<none>'}; supported types: {supported}")

@@ -27,7 +27,7 @@ Open <http://127.0.0.1:8000/> for the review workspace, or
 
 The review workspace lets you:
 
-- Upload a Word (`.docx`), Markdown, plain-text, or reStructuredText BRD.
+- Upload a Word (`.docx`), PDF, Markdown, plain-text, or reStructuredText BRD.
 - Start or resume generation and see approval-gate state.
 - Preview system-model traceability, architecture components, and recommended diagrams.
 - Browse the generated mockup screens.
@@ -45,11 +45,13 @@ uv run design run .
 
 All project state and generated artifacts are stored under `.design/`.
 
-## Optional OpenAI or Claude generation
+## Optional OpenAI, Claude, or Gemini generation
 
 The workflow engine remains the orchestrator: it decides step order, approval
 gates, retries, and persistence. A selected model provider powers the three
-reasoning agents (requirements, architecture, and UX).
+reasoning agents (requirements, architecture, and UX). The architecture agent
+can additionally call a real Mermaid MCP tool mid-generation (see below) with
+any of these three live providers.
 
 Copy [`.env.example`](.env.example) to `.env` in the project root, then choose
 one provider and fill in its key and model. `.env` is ignored by Git and keys
@@ -68,6 +70,12 @@ ANTHROPIC_API_KEY=...
 ANTHROPIC_MODEL=your-available-model
 ```
 
+```text
+DESIGN_PIPELINE_PROVIDER=gemini
+GEMINI_API_KEY=...
+GEMINI_MODEL=your-available-model
+```
+
 Restart the API server after editing `.env`. Leave the provider as `stub` to
 use the deterministic offline fixtures used by the test suite.
 
@@ -76,7 +84,21 @@ review workspace. This reruns the business, solution, system, architecture,
 and mockup stages as new artifact versions while preserving the earlier stub
 versions for comparison.
 
-The MVP accepts Word (`.docx`), Markdown, plain text, or reStructuredText BRDs. You can ingest
+## Mermaid diagram tool-calling
+
+With a live provider selected, the architecture agent has a real `mermaid.render`
+tool available: it writes Mermaid syntax, calls the tool to validate and
+render it, and can react to errors before finishing -- a genuine multi-turn
+tool-calling loop (`ProviderBackedAgent`), not a single-shot text call. This
+needs the optional `mermaid` extra (`pip install ".[mermaid]"`) and no
+credentials at all for the render/validate step itself.
+
+Set `MERMAID_API_KEY` (from your Mermaid Chart account settings) to
+additionally persist rendered diagrams to that account; leave it blank and
+the diagram is still stored as this app's own versioned artifact, just not
+mirrored to Mermaid Chart.
+
+The MVP accepts Word (`.docx`), PDF, Markdown, plain text, or reStructuredText BRDs. You can ingest
 a document through the CLI with `design ingest . path\to\requirements.md`, or
 through `POST /documents/brd` in the API documentation. The source is stored at
 `.design/input/BRD.md` and becomes the `brd` artifact when the requirements step

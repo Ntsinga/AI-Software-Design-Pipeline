@@ -64,10 +64,26 @@ def atomic_write(path: Path, content: str) -> None:
         raise
 
 
+DEFAULT_PROJECT_ID = "default"
+
+
+def _safe_project_id(project_id: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "-", project_id).strip("-").lower()
+    if not cleaned:
+        raise ValueError("project_id cannot be empty after sanitization")
+    return cleaned
+
+
 class ProjectPaths:
-    def __init__(self, root: Path | str):
+    def __init__(self, root: Path | str, project_id: str = DEFAULT_PROJECT_ID):
         self.root = Path(root).resolve()
-        self.design = self.root / ".design"
+        self.project_id = _safe_project_id(project_id)
+        # Every project gets its own subtree under `.design/<project_id>/`.
+        # A legacy single-project layout (data directly under `.design/`)
+        # is migrated to `.design/default/` on first load; see
+        # `_migrate_legacy_layout`.
+        self.projects_root = self.root / ".design"
+        self.design = self.projects_root / self.project_id
         self.agents = self.design / "agents"
         self.workflows = self.design / "workflows"
         self.state = self.design / "state"
@@ -195,10 +211,23 @@ class ArtifactRegistry:
         atomic_write(self._metadata_path(logical_id, artifact.metadata.version), artifact.metadata.model_dump_json(indent=2) + "\n")
         return artifact.metadata
 
+    def attach_comment(self, logical_id: str, comment_id: str, version: int | None = None) -> ArtifactMetadata:
+        artifact = self.get(logical_id, version)
+        if comment_id not in artifact.metadata.comments:
+            artifact.metadata.comments.append(comment_id)
+        atomic_write(self._metadata_path(logical_id, artifact.metadata.version), artifact.metadata.model_dump_json(indent=2) + "\n")
+        return artifact.metadata
+
 
 class ProjectStore:
-    def __init__(self, root: Path | str):
-        self.paths = ProjectPaths(root)
+    def __init__(self, root: Path | str, project_id: str = DEFAULT_PROJECT_ID):
+        self.paths = ProjectPaths(root, project_id)
+        # If this project's directory doesn't exist yet but there IS legacy
+        # single-project data directly under `.design/` (from before
+        # multi-project support), migrate it into `.design/default/` so the
+        # existing local project keeps working after the upgrade.
+        if project_id == DEFAULT_PROJECT_ID and not self.paths.design.exists():
+            _migrate_legacy_layout(self.paths)
         self.artifacts = ArtifactRegistry(self.paths)
 
     def initialize(self, project_id: str | None = None) -> ProjectState:
@@ -215,7 +244,10 @@ class ProjectStore:
         state_path = self.paths.state / "project-state.yaml"
         if state_path.exists():
             return self.load_state()
-        state = ProjectState(project_id=project_id or self.paths.root.name)
+        # The project_id argument overrides only the display-name label.
+        # The routing/storage id is fixed at construction time
+        # (`self.paths.project_id`) and cannot be renamed after init.
+        state = ProjectState(project_id=project_id or self.paths.project_id)
         self.save_state(state)
         self.save_dependency_graph(DependencyGraph())
         history = self.paths.state / "execution-history.jsonl"
@@ -299,8 +331,85 @@ class ProjectStore:
         return sorted(result, key=lambda item: item.id)
 
 
-def build_project_store(root: Path | str, database_url: str | None = None) -> "ProjectStore | PostgresProjectStore":
-    """Return the filesystem or Postgres-backed store, whichever applies.
+def _migrate_legacy_layout(paths: ProjectPaths) -> None:
+    """Move pre-multi-project data (directly under `.design/`) into
+    `.design/default/` on first read. Idempotent -- if the new subtree
+    already exists or there's nothing to migrate, do nothing."""
+    projects_root = paths.projects_root
+    if not projects_root.exists():
+        return
+    legacy_children = {"agents", "workflows", "state", "input", "artifacts", "review"}
+    present = {item.name for item in projects_root.iterdir() if item.is_dir()}
+    to_move = legacy_children & present
+    if not to_move:
+        return
+    paths.design.mkdir(parents=True, exist_ok=True)
+    for name in to_move:
+        source = projects_root / name
+        destination = paths.design / name
+        if not destination.exists():
+            os.rename(source, destination)
+
+
+class ProjectRegistry:
+    """Lists and creates projects on the filesystem-backed store.
+
+    Kept as a thin, side-effect-free (except `create`) helper so the same
+    interface can be mirrored by the Postgres backend without either one
+    holding runtime state."""
+
+    def __init__(self, root: Path | str):
+        self.root = Path(root).resolve()
+        self.projects_root = self.root / ".design"
+        self.index_path = self.projects_root / "projects.yaml"
+
+    def list_projects(self) -> list[dict[str, str]]:
+        # Rebuild the index from directories on disk each call so a hand-
+        # created project directory (or one restored from git) shows up
+        # without needing the index to be maintained manually. Only
+        # directories that look like a real project (they contain the
+        # marker `state/project-state.yaml` OR they're listed explicitly
+        # in projects.yaml) count -- this prevents leftover legacy
+        # subdirs like `agents/`, `artifacts/`, `input/` (from before the
+        # multi-project layout) from being reported as their own projects.
+        if not self.projects_root.exists():
+            return []
+        index = self._load_index()
+        indexed = {entry["id"]: entry for entry in index}
+        discovered: list[dict[str, str]] = []
+        for item in sorted(self.projects_root.iterdir(), key=lambda item: item.name):
+            if not item.is_dir():
+                continue
+            project_id = item.name
+            looks_like_project = (item / "state" / "project-state.yaml").exists()
+            if not looks_like_project and project_id not in indexed:
+                continue
+            entry = indexed.get(project_id, {"id": project_id, "name": project_id})
+            discovered.append(entry)
+        return discovered
+
+    def create_project(self, name: str) -> dict[str, str]:
+        project_id = _safe_project_id(name)
+        self.projects_root.mkdir(parents=True, exist_ok=True)
+        (self.projects_root / project_id).mkdir(exist_ok=True)
+        index = self._load_index()
+        if not any(entry["id"] == project_id for entry in index):
+            index.append({"id": project_id, "name": name})
+            atomic_write(self.index_path, yaml.safe_dump(index, sort_keys=False))
+        return {"id": project_id, "name": name}
+
+    def _load_index(self) -> list[dict[str, str]]:
+        if not self.index_path.exists():
+            return []
+        try:
+            data = yaml.safe_load(self.index_path.read_text(encoding="utf-8")) or []
+        except yaml.YAMLError:
+            return []
+        return [entry for entry in data if isinstance(entry, dict) and "id" in entry]
+
+
+def build_project_store(root: Path | str, project_id: str = DEFAULT_PROJECT_ID, database_url: str | None = None) -> "ProjectStore | PostgresProjectStore":
+    """Return the filesystem or Postgres-backed store for one project.
 
     A `DATABASE_URL` (real environment, or the project's `.env`) selects the
     Postgres-backed store; its absence keeps today's filesystem behavior
@@ -312,5 +421,16 @@ def build_project_store(root: Path | str, database_url: str | None = None) -> "P
     if database_url:
         from .db.store import PostgresProjectStore
 
-        return PostgresProjectStore(root, database_url)
-    return ProjectStore(root)
+        return PostgresProjectStore(root, database_url, project_id=project_id)
+    return ProjectStore(root, project_id=project_id)
+
+
+def build_project_registry(root: Path | str, database_url: str | None = None):
+    """Return the filesystem or Postgres project registry."""
+    if database_url is None:
+        database_url = load_database_url(root)
+    if database_url:
+        from .db.store import PostgresProjectRegistry
+
+        return PostgresProjectRegistry(database_url)
+    return ProjectRegistry(root)
