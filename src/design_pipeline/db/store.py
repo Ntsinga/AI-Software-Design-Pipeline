@@ -1,11 +1,16 @@
 """Postgres-backed equivalents of `storage.ProjectStore` / `ArtifactRegistry`.
 
 Both classes here expose the exact same public methods as their filesystem
-counterparts (see `storage.py`) so `DesignRuntime` -- and everything built on
-it -- can use either backend interchangeably. `PostgresProjectStore` still
-keeps a `ProjectPaths` for the config/staging files that remain on disk in
-either mode: agent and workflow YAML definitions, and the BRD upload staging
-file (see `storage.build_project_store` for why those stay filesystem-only).
+counterparts (see `storage.py`) so `DesignRuntime` -- and everything built
+on it -- can use either backend interchangeably. `PostgresProjectStore`
+still keeps a `ProjectPaths` for the config/staging files that remain on
+disk in either mode: agent and workflow YAML definitions, and the BRD
+upload staging file (see `storage.build_project_store` for why those stay
+filesystem-only).
+
+Every table row is scoped by `project_id` (see `db/schema.py`); each
+store instance is bound to one project at construction time and every
+query/insert filters by that id.
 """
 
 from __future__ import annotations
@@ -32,13 +37,14 @@ from ..models import (
     WorkflowStatus,
     utc_now,
 )
-from ..storage import ArtifactRegistry, ProjectPaths
+from ..storage import DEFAULT_PROJECT_ID, ArtifactRegistry, ProjectPaths, _safe_project_id
 from .engine import build_engine
-from .schema import approvals, artifacts, comments, dependency_graph, execution_events, metadata as db_metadata, project_state, tasks
+from .schema import approvals, artifacts, comments, dependency_graph, execution_events, metadata as db_metadata, project_state, projects, tasks
 
 
-def _metadata_row(metadata: ArtifactMetadata, content: Any) -> dict[str, Any]:
+def _metadata_row(project_id: str, metadata: ArtifactMetadata, content: Any) -> dict[str, Any]:
     return {
+        "project_id": project_id,
         "logical_id": metadata.logical_id,
         "version": metadata.version,
         "type": metadata.type,
@@ -74,13 +80,17 @@ def _row_to_metadata(row: Any) -> ArtifactMetadata:
 
 
 class PostgresArtifactRegistry:
-    def __init__(self, engine: Engine):
+    def __init__(self, engine: Engine, project_id: str):
         self._engine = engine
+        self._project_id = project_id
 
     def _next_version(self, logical_id: str) -> int:
         with self._engine.connect() as conn:
             highest = conn.execute(
-                select(func.max(artifacts.c.version)).where(artifacts.c.logical_id == logical_id)
+                select(func.max(artifacts.c.version)).where(
+                    artifacts.c.project_id == self._project_id,
+                    artifacts.c.logical_id == logical_id,
+                )
             ).scalar()
         return (highest or 0) + 1
 
@@ -113,17 +123,20 @@ class PostgresArtifactRegistry:
             content_file=f"v{version}.json",
             comments=list(comments),
         )
-        row = _metadata_row(artifact_metadata, content)
+        row = _metadata_row(self._project_id, artifact_metadata, content)
         with self._engine.begin() as conn:
             conn.execute(
                 pg_insert(artifacts)
                 .values(**row)
-                .on_conflict_do_update(index_elements=["logical_id", "version"], set_=row)
+                .on_conflict_do_update(index_elements=["project_id", "logical_id", "version"], set_=row)
             )
         return StoredArtifact(metadata=artifact_metadata, content=content)
 
     def get(self, logical_id: str, version: int | None = None) -> StoredArtifact:
-        stmt = select(artifacts).where(artifacts.c.logical_id == logical_id)
+        stmt = select(artifacts).where(
+            artifacts.c.project_id == self._project_id,
+            artifacts.c.logical_id == logical_id,
+        )
         stmt = stmt.order_by(artifacts.c.version.desc()).limit(1) if version is None else stmt.where(artifacts.c.version == version)
         with self._engine.connect() as conn:
             row = conn.execute(stmt).mappings().first()
@@ -134,13 +147,17 @@ class PostgresArtifactRegistry:
     def list_versions(self, logical_id: str) -> list[ArtifactMetadata]:
         with self._engine.connect() as conn:
             rows = conn.execute(
-                select(artifacts).where(artifacts.c.logical_id == logical_id).order_by(artifacts.c.version)
+                select(artifacts).where(
+                    artifacts.c.project_id == self._project_id,
+                    artifacts.c.logical_id == logical_id,
+                ).order_by(artifacts.c.version)
             ).mappings().all()
         return [_row_to_metadata(row) for row in rows]
 
     def list_latest(self) -> list[ArtifactMetadata]:
         latest_versions = (
             select(artifacts.c.logical_id, func.max(artifacts.c.version).label("version"))
+            .where(artifacts.c.project_id == self._project_id)
             .group_by(artifacts.c.logical_id)
             .subquery()
         )
@@ -150,7 +167,7 @@ class PostgresArtifactRegistry:
                 artifacts.c.logical_id == latest_versions.c.logical_id,
                 artifacts.c.version == latest_versions.c.version,
             ),
-        ).order_by(artifacts.c.logical_id)
+        ).where(artifacts.c.project_id == self._project_id).order_by(artifacts.c.logical_id)
         with self._engine.connect() as conn:
             rows = conn.execute(stmt).mappings().all()
         return [_row_to_metadata(row) for row in rows]
@@ -162,7 +179,11 @@ class PostgresArtifactRegistry:
         with self._engine.begin() as conn:
             conn.execute(
                 update(artifacts)
-                .where(artifacts.c.logical_id == logical_id, artifacts.c.version == artifact.metadata.version)
+                .where(
+                    artifacts.c.project_id == self._project_id,
+                    artifacts.c.logical_id == logical_id,
+                    artifacts.c.version == artifact.metadata.version,
+                )
                 .values(status=status.value, error=error)
             )
         artifact.metadata.status = status
@@ -176,38 +197,63 @@ class PostgresArtifactRegistry:
         with self._engine.begin() as conn:
             conn.execute(
                 update(artifacts)
-                .where(artifacts.c.logical_id == logical_id, artifacts.c.version == artifact.metadata.version)
+                .where(
+                    artifacts.c.project_id == self._project_id,
+                    artifacts.c.logical_id == logical_id,
+                    artifacts.c.version == artifact.metadata.version,
+                )
                 .values(approvals=artifact.metadata.approvals)
+            )
+        return artifact.metadata
+
+    def attach_comment(self, logical_id: str, comment_id: str, version: int | None = None) -> ArtifactMetadata:
+        artifact = self.get(logical_id, version)
+        if comment_id not in artifact.metadata.comments:
+            artifact.metadata.comments.append(comment_id)
+        with self._engine.begin() as conn:
+            conn.execute(
+                update(artifacts)
+                .where(
+                    artifacts.c.project_id == self._project_id,
+                    artifacts.c.logical_id == logical_id,
+                    artifacts.c.version == artifact.metadata.version,
+                )
+                .values(comments=artifact.metadata.comments)
             )
         return artifact.metadata
 
 
 class PostgresProjectStore:
-    def __init__(self, root: Path | str, database_url: str):
-        self.paths = ProjectPaths(root)
+    def __init__(self, root: Path | str, database_url: str, project_id: str = DEFAULT_PROJECT_ID):
+        self.paths = ProjectPaths(root, project_id)
+        self._project_id = self.paths.project_id
         self._engine = build_engine(database_url)
         # Idempotent: safe to call on every construction (e.g. every CLI
         # invocation), including against a brand new, empty database.
         db_metadata.create_all(self._engine, checkfirst=True)
-        self.artifacts = PostgresArtifactRegistry(self._engine)
+        self.artifacts = PostgresArtifactRegistry(self._engine, self._project_id)
 
     def initialize(self, project_id: str | None = None) -> ProjectState:
         for directory in (self.paths.agents, self.paths.workflows, self.paths.input):
             directory.mkdir(parents=True, exist_ok=True)
         if self.is_initialized():
             return self.load_state()
-        state = ProjectState(project_id=project_id or self.paths.root.name)
+        state = ProjectState(project_id=project_id or self._project_id)
         self.save_state(state)
         self.save_dependency_graph(DependencyGraph())
         return state
 
     def is_initialized(self) -> bool:
         with self._engine.connect() as conn:
-            return conn.execute(select(project_state.c.project_id)).first() is not None
+            return conn.execute(
+                select(project_state.c.project_id).where(project_state.c.project_id == self._project_id)
+            ).first() is not None
 
     def load_state(self) -> ProjectState:
         with self._engine.connect() as conn:
-            row = conn.execute(select(project_state)).mappings().first()
+            row = conn.execute(
+                select(project_state).where(project_state.c.project_id == self._project_id)
+            ).mappings().first()
         if row is None:
             raise FileNotFoundError("project is not initialized; run `design init`")
         return ProjectState(
@@ -222,7 +268,7 @@ class PostgresProjectStore:
     def save_state(self, state: ProjectState) -> None:
         state.updated_at = utc_now()
         row = {
-            "project_id": state.project_id,
+            "project_id": self._project_id,
             "workflow_id": state.workflow_id,
             "workflow_status": state.workflow_status.value,
             "step_states": {key: value.value for key, value in state.step_states.items()},
@@ -234,18 +280,21 @@ class PostgresProjectStore:
 
     def load_dependency_graph(self) -> DependencyGraph:
         with self._engine.connect() as conn:
-            row = conn.execute(select(dependency_graph).where(dependency_graph.c.id == 1)).mappings().first()
+            row = conn.execute(
+                select(dependency_graph).where(dependency_graph.c.project_id == self._project_id)
+            ).mappings().first()
         return DependencyGraph(requirements=row["requirements"]) if row else DependencyGraph()
 
     def save_dependency_graph(self, graph: DependencyGraph) -> None:
-        row = {"id": 1, "requirements": graph.requirements}
+        row = {"project_id": self._project_id, "requirements": graph.requirements}
         with self._engine.begin() as conn:
-            conn.execute(pg_insert(dependency_graph).values(**row).on_conflict_do_update(index_elements=["id"], set_={"requirements": graph.requirements}))
+            conn.execute(pg_insert(dependency_graph).values(**row).on_conflict_do_update(index_elements=["project_id"], set_={"requirements": graph.requirements}))
 
     def append_event(self, event_type: str, *, step_id: str | None = None, artifact_id: str | None = None, details: dict[str, Any] | None = None) -> ExecutionEvent:
         event = ExecutionEvent(event_id=f"event-{uuid4().hex[:12]}", event_type=event_type, step_id=step_id, artifact_id=artifact_id, details=details or {})
         with self._engine.begin() as conn:
             conn.execute(execution_events.insert().values(
+                project_id=self._project_id,
                 event_id=event.event_id,
                 event_type=event.event_type,
                 timestamp=event.timestamp,
@@ -257,7 +306,9 @@ class PostgresProjectStore:
 
     def read_events(self) -> list[ExecutionEvent]:
         with self._engine.connect() as conn:
-            rows = conn.execute(select(execution_events).order_by(execution_events.c.seq)).mappings().all()
+            rows = conn.execute(
+                select(execution_events).where(execution_events.c.project_id == self._project_id).order_by(execution_events.c.seq)
+            ).mappings().all()
         return [
             ExecutionEvent(event_id=row["event_id"], event_type=row["event_type"], timestamp=row["timestamp"], step_id=row["step_id"], artifact_id=row["artifact_id"], details=row["details"])
             for row in rows
@@ -266,6 +317,7 @@ class PostgresProjectStore:
     def save_comment(self, comment: Comment) -> None:
         row = {
             "id": comment.id,
+            "project_id": self._project_id,
             "artifact_id": comment.artifact_id,
             "text": comment.text,
             "author": comment.author,
@@ -278,7 +330,7 @@ class PostgresProjectStore:
             conn.execute(pg_insert(comments).values(**row).on_conflict_do_update(index_elements=["id"], set_=row))
 
     def list_comments(self, artifact_id: str | None = None) -> list[Comment]:
-        stmt = select(comments)
+        stmt = select(comments).where(comments.c.project_id == self._project_id)
         if artifact_id is not None:
             stmt = stmt.where(comments.c.artifact_id == artifact_id)
         with self._engine.connect() as conn:
@@ -288,6 +340,7 @@ class PostgresProjectStore:
     def save_approval(self, approval: Approval) -> None:
         row = {
             "id": approval.id,
+            "project_id": self._project_id,
             "artifact_id": approval.artifact_id,
             "version": approval.version,
             "decision": approval.decision,
@@ -301,6 +354,7 @@ class PostgresProjectStore:
     def save_task(self, task) -> None:
         row = {
             "id": task.id,
+            "project_id": self._project_id,
             "objective": task.objective,
             "step_id": task.step_id,
             "handoff": task.handoff.model_dump(mode="json") if task.handoff else None,
@@ -314,5 +368,30 @@ class PostgresProjectStore:
         from ..models import Task
 
         with self._engine.connect() as conn:
-            rows = conn.execute(select(tasks).order_by(tasks.c.id)).mappings().all()
+            rows = conn.execute(
+                select(tasks).where(tasks.c.project_id == self._project_id).order_by(tasks.c.id)
+            ).mappings().all()
         return [Task(id=row["id"], objective=row["objective"], step_id=row["step_id"], handoff=row["handoff"], status=row["status"], attempts=row["attempts"]) for row in rows]
+
+
+class PostgresProjectRegistry:
+    """Postgres equivalent of `storage.ProjectRegistry`. Same interface."""
+
+    def __init__(self, database_url: str):
+        self._engine = build_engine(database_url)
+        db_metadata.create_all(self._engine, checkfirst=True)
+
+    def list_projects(self) -> list[dict[str, str]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(select(projects).order_by(projects.c.id)).mappings().all()
+        return [{"id": row["id"], "name": row["name"]} for row in rows]
+
+    def create_project(self, name: str) -> dict[str, str]:
+        project_id = _safe_project_id(name)
+        with self._engine.begin() as conn:
+            conn.execute(
+                pg_insert(projects)
+                .values(id=project_id, name=name, created_at=utc_now())
+                .on_conflict_do_nothing(index_elements=["id"])
+            )
+        return {"id": project_id, "name": name}

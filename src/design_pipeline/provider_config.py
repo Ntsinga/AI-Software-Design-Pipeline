@@ -17,8 +17,15 @@ class ProviderSettings:
     provider: str = "stub"
     model: str = "deterministic-fixture"
     api_key: str | None = None
-    max_output_tokens: int = 3500
-    timeout_seconds: float = 60.0
+    # A single mockups-step response can now hold 30-40+ real, self-
+    # contained HTML pages (one per workflow screen + entity CRUD screen) --
+    # 3500 was fine for the original handful of screens but silently
+    # truncated once the domain grew past ~15 entities, dropping whichever
+    # workflow/screens fell near the end of the response. Same "raise as
+    # the domain grows" pattern already applied to max_tool_iterations.
+    max_output_tokens: int = 16000
+    timeout_seconds: float = 300.0
+    max_tool_iterations: int = 20
 
     @property
     def is_live(self) -> bool:
@@ -65,22 +72,43 @@ def load_provider_settings(root: Path | str, environ: Mapping[str, str] | None =
         return environment.get(name, file_values.get(name, default)).strip()
 
     provider = value("DESIGN_PIPELINE_PROVIDER", "stub").lower()
-    if provider not in {"stub", "openai", "anthropic"}:
-        raise ProviderConfigurationError("DESIGN_PIPELINE_PROVIDER must be stub, openai, or anthropic")
+    if provider not in {"stub", "openai", "anthropic", "gemini"}:
+        raise ProviderConfigurationError("DESIGN_PIPELINE_PROVIDER must be stub, openai, anthropic, or gemini")
     if provider == "stub":
         return ProviderSettings()
 
-    prefix = "OPENAI" if provider == "openai" else "ANTHROPIC"
+    prefix = {"openai": "OPENAI", "anthropic": "ANTHROPIC", "gemini": "GEMINI"}[provider]
     model = value("DESIGN_PIPELINE_MODEL") or value(f"{prefix}_MODEL")
     api_key = value(f"{prefix}_API_KEY") or None
     try:
-        max_output_tokens = int(value("DESIGN_PIPELINE_MAX_OUTPUT_TOKENS", "3500"))
-        timeout_seconds = float(value("DESIGN_PIPELINE_TIMEOUT_SECONDS", "60"))
+        max_output_tokens = int(value("DESIGN_PIPELINE_MAX_OUTPUT_TOKENS", "16000"))
+        timeout_seconds = float(value("DESIGN_PIPELINE_TIMEOUT_SECONDS", "300"))
+        max_tool_iterations = int(value("DESIGN_PIPELINE_MAX_TOOL_ITERATIONS", "20"))
     except ValueError as exc:
-        raise ProviderConfigurationError("model token and timeout settings must be numeric") from exc
-    if max_output_tokens < 1 or timeout_seconds <= 0:
-        raise ProviderConfigurationError("model token and timeout settings must be positive")
-    return ProviderSettings(provider, model, api_key, max_output_tokens, timeout_seconds)
+        raise ProviderConfigurationError("model token, timeout, and tool-iteration settings must be numeric") from exc
+    if max_output_tokens < 1 or timeout_seconds <= 0 or max_tool_iterations < 1:
+        raise ProviderConfigurationError("model token, timeout, and tool-iteration settings must be positive")
+    return ProviderSettings(provider, model, api_key, max_output_tokens, timeout_seconds, max_tool_iterations)
+
+
+def update_provider(root: Path | str, provider: str) -> None:
+    """Rewrite just the `DESIGN_PIPELINE_PROVIDER=` line in the project's
+    `.env`, preserving every other line (comments, keys, ordering). Adds
+    the line if `.env` doesn't have one yet. Keys are never touched here --
+    only which provider is active.
+    """
+    provider = provider.strip().lower()
+    if provider not in {"stub", "openai", "anthropic", "gemini"}:
+        raise ProviderConfigurationError("DESIGN_PIPELINE_PROVIDER must be stub, openai, anthropic, or gemini")
+    path = Path(root) / ".env"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    for index, line in enumerate(lines):
+        if line.strip().startswith("DESIGN_PIPELINE_PROVIDER="):
+            lines[index] = f"DESIGN_PIPELINE_PROVIDER={provider}"
+            break
+    else:
+        lines.append(f"DESIGN_PIPELINE_PROVIDER={provider}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def load_database_url(root: Path | str, environ: Mapping[str, str] | None = None) -> str | None:
@@ -92,4 +120,17 @@ def load_database_url(root: Path | str, environ: Mapping[str, str] | None = None
     file_values = _read_dotenv(Path(root) / ".env")
     environment = os.environ if environ is None else environ
     value = environment.get("DATABASE_URL", file_values.get("DATABASE_URL", "")).strip()
+    return value or None
+
+
+def load_mermaid_api_key(root: Path | str, environ: Mapping[str, str] | None = None) -> str | None:
+    """Return `MERMAID_API_KEY`, if set.
+
+    Purely optional: the Mermaid render/validate tool works with no key at
+    all. When set, rendered diagrams are additionally persisted to the
+    configured Mermaid Chart account.
+    """
+    file_values = _read_dotenv(Path(root) / ".env")
+    environment = os.environ if environ is None else environ
+    value = environment.get("MERMAID_API_KEY", file_values.get("MERMAID_API_KEY", "")).strip()
     return value or None

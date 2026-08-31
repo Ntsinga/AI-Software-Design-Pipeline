@@ -14,6 +14,7 @@
         <nav class="nav" aria-label="Workspace sections">
           <button class="nav-link active" data-view="overview">Overview</button>
           <button class="nav-link" data-view="system">System model</button>
+          <button class="nav-link" data-view="data-model">Data model</button>
           <button class="nav-link" data-view="architecture">Architecture</button>
           <button class="nav-link" data-view="mockups">Mockups</button>
           <button class="nav-link" data-view="history">History</button>
@@ -22,32 +23,41 @@
       </aside>
 
       <main class="main-content">
-        <header class="topbar"><div><p class="eyebrow">LOCAL DESIGN REVIEW</p><h1 id="project-name">Design Pipeline</h1></div><div class="topbar-actions"><button id="initialize-button" class="secondary-button">Initialize project</button><button id="run-button" class="primary-button">Generate / resume</button><button id="live-run-button" class="secondary-button">Regenerate with live AI</button></div></header>
+        <header class="topbar"><div><p class="eyebrow">LOCAL DESIGN REVIEW</p><h1 id="project-name">Design Pipeline</h1></div><div class="topbar-actions"><select id="project-select" class="secondary-button" aria-label="Current project" title="Current project"></select><button id="new-project-button" class="secondary-button" title="Create a new project">+ New project</button><select id="provider-select" class="secondary-button" aria-label="Model provider" title="Model provider"><option value="stub">Stub (deterministic)</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><button id="run-button" class="primary-button">Generate / resume</button></div></header>
 
         <section id="notice" class="notice hidden" role="status"></section>
 
         <section id="overview-view" class="view active">
           <div class="hero-card">
-            <div><p class="eyebrow">START WITH REQUIREMENTS</p><h2>Upload a business requirements document</h2><p>Use a Word document, Markdown, plain text, or reStructuredText. The pipeline extracts the text as its BRD input, then generates the business, solution, and system models.</p></div>
-            <div class="upload-control"><input id="document-input" type="file" accept=".docx,.md,.markdown,.txt,.rst,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small></div>
+            <div><p class="eyebrow">START WITH REQUIREMENTS</p><h2>Upload a business requirements document</h2><p>Use a Word document (.docx), PDF, Markdown, plain text, or reStructuredText. The pipeline extracts the text as its BRD input, then generates the business, solution, and system models.</p></div>
+            <div class="upload-control"><input id="document-input" type="file" accept=".docx,.pdf,.md,.markdown,.txt,.rst,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small></div>
           </div>
           <div class="stat-grid" id="stats"></div>
-          <div class="section-heading"><div><p class="eyebrow">GENERATED ARTIFACTS</p><h2>Design trace</h2></div><p>Open any artifact to preview its data, requirements, version history, and review actions.</p></div>
+          <div class="section-heading"><div><p class="eyebrow">GENERATED ARTIFACTS</p><h2>Design trace</h2></div><div class="section-actions"><button id="live-run-button" class="secondary-button" title="Discard downstream artifacts and regenerate the whole design with the current live provider">🔁 Regenerate whole design</button></div></div>
           <div id="artifact-cards" class="artifact-grid empty-state">No artifacts yet. Upload a document and start generation.</div>
         </section>
 
         <section id="system-view" class="view">
-          <div class="section-heading"><div><p class="eyebrow">SYSTEM UNDERSTANDING</p><h2>System model</h2></div><p>Trace business requirements into capabilities, services, screens, and permissions.</p></div>
+          <div class="section-heading"><div><p class="eyebrow">SYSTEM UNDERSTANDING</p><h2>System model</h2></div><div class="section-actions"><span id="system-model-status" class="status-pill muted"></span><button class="secondary-button hidden" data-stage-approve="system-model" data-stage-label="system model">✅ Approve</button><button class="secondary-button" data-stage-retry="system-model" data-stage-label="system model">🔁 Regenerate system model</button></div></div>
+          <div class="attachments-strip" data-references-strip="system"></div>
           <div id="system-model" class="model-layout empty-state">Generate the system model to see the traceability map.</div>
         </section>
 
+        <section id="data-model-view" class="view">
+          <div class="section-heading"><div><p class="eyebrow">DATA MODELING</p><h2>Entities, fields &amp; relationships</h2></div><div class="section-actions"><span id="data-model-status" class="status-pill muted"></span><button class="secondary-button hidden" data-stage-approve="data-model" data-stage-label="data model">✅ Approve</button><button class="secondary-button" data-stage-retry="data-model" data-stage-label="data model">🔁 Regenerate data model</button></div></div>
+          <div class="attachments-strip" data-references-strip="data-model"></div>
+          <div id="data-model" class="model-layout empty-state">Approve the system model to generate the data model.</div>
+        </section>
+
         <section id="architecture-view" class="view">
-          <div class="section-heading"><div><p class="eyebrow">SOLUTION DESIGN</p><h2>Architecture and diagrams</h2></div><p>Architecture recommendations are shown as an interactive component chart.</p></div>
-          <div id="architecture-model" class="model-layout empty-state">Approve the system model to generate architecture recommendations.</div>
+          <div class="section-heading"><div><p class="eyebrow">SOLUTION DESIGN</p><h2>Architecture and diagrams</h2></div><div class="section-actions"><span id="architecture-model-status" class="status-pill muted"></span><button class="secondary-button hidden" data-stage-approve="architecture-model" data-stage-label="architecture">✅ Approve</button><button class="secondary-button" data-stage-retry="architecture-model" data-stage-label="architecture">🔁 Regenerate architecture</button></div></div>
+          <div class="attachments-strip" data-references-strip="architecture"></div>
+          <div id="architecture-model" class="model-layout empty-state">Approve the data model to generate architecture recommendations.</div>
         </section>
 
         <section id="mockups-view" class="view">
-          <div class="section-heading"><div><p class="eyebrow">INTERACTION DESIGN</p><h2>Mockup navigator</h2></div><p>Browse the generated mockup specification as a lightweight interactive screen preview.</p></div>
+          <div class="section-heading"><div><p class="eyebrow">INTERACTION DESIGN</p><h2>Mockup navigator</h2></div><div class="section-actions"><button class="secondary-button" data-stage-retry="mockup-pages" data-stage-label="mockups">🔁 Regenerate mockups</button></div></div>
+          <div class="attachments-strip" data-references-strip="mockup"></div>
           <div id="mockup-model" class="model-layout empty-state">Approve the architecture to generate the mockup specification.</div>
         </section>
 
@@ -66,6 +76,20 @@
       <form id="comment-form" class="comment-form"><label for="comment-text">Review comment</label><div><textarea id="comment-text" placeholder="Describe what should change…"></textarea><button class="secondary-button" type="submit">Add comment</button></div></form>
       <div><p class="eyebrow">VERSION HISTORY</p><div id="version-list" class="version-list"></div></div>
     </dialog>
+
+    <dialog id="app-modal" class="app-modal">
+      <form method="dialog" class="app-modal-form">
+        <h2 id="app-modal-title" class="app-modal-title"></h2>
+        <p id="app-modal-body" class="app-modal-body"></p>
+        <input id="app-modal-input" class="app-modal-input hidden" type="text" autocomplete="off" />
+        <div class="app-modal-actions">
+          <button id="app-modal-cancel" class="secondary-button" value="cancel" type="submit">Cancel</button>
+          <button id="app-modal-confirm" class="primary-button" value="confirm" type="submit">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/review-assets/mermaid.min.js"></script>
     <script src="/review-assets/app.js"></script>
   </body>
 </html>
