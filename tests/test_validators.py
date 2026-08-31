@@ -8,7 +8,7 @@ import pytest
 from design_pipeline.agents import ProviderBackedAgent
 from design_pipeline.models import AgentDefinition
 from design_pipeline.providers.base import ProviderRequest, ProviderResponse
-from design_pipeline.validators import data_model_relationships_reference_known_entities, entity_crud_coverage, no_raw_ids_rendered_in_html, workflow_id_coverage
+from design_pipeline.validators import _hierarchy_chain_components, data_model_relationships_reference_known_entities, entity_crud_coverage, no_raw_ids_rendered_in_html, workflow_id_coverage
 
 
 def _definition() -> AgentDefinition:
@@ -95,6 +95,113 @@ def test_entity_crud_coverage_falls_back_to_system_model_when_no_data_model():
     values = {"mockup-spec": {"screens": [{"id": "s1", "entity_id": "ia_finding"}, {"id": "s2", "entity_id": "ia_finding"}]}}
     inputs = {"system-model": {"entities": ["ia_finding"]}}
     assert entity_crud_coverage(values, inputs) == []
+
+
+def _five_level_data_model():
+    """MajorProcess -> SubProcess -> RiskStatement -> TestObjective ->
+    Procedure, a real chain reproduced from the live failure this fixes."""
+    return {
+        "entities": [{"name": n} for n in ["MajorProcess", "SubProcess", "RiskStatement", "TestObjective", "Procedure"]],
+        "relationships": [
+            {"from_entity": "MajorProcess", "to_entity": "SubProcess", "cardinality": "one-to-many"},
+            {"from_entity": "SubProcess", "to_entity": "RiskStatement", "cardinality": "one-to-many"},
+            {"from_entity": "RiskStatement", "to_entity": "TestObjective", "cardinality": "one-to-many"},
+            {"from_entity": "TestObjective", "to_entity": "Procedure", "cardinality": "one-to-many"},
+        ],
+    }
+
+
+def test_entity_crud_coverage_exempts_deep_hierarchy_chain_from_dual_screen_rule():
+    """Reproduces the live failure: forcing 2 screens per level of a
+    5-level fieldwork register produced an unmanageable pile the model
+    couldn't satisfy. One shared screen for the whole chain must pass."""
+    values = {"mockup-spec": {"screens": [{"id": "fieldwork_register_editor", "entity_id": "MajorProcess"}]}}
+    inputs = {"data-model": _five_level_data_model()}
+    assert entity_crud_coverage(values, inputs) == []
+
+
+def test_entity_crud_coverage_still_requires_some_coverage_for_chain_entities():
+    """A chain still needs at least ONE screen representing it -- it just
+    doesn't need two per level."""
+    values = {"mockup-spec": {"screens": [{"id": "s", "entity_id": "unrelated_entity"}]}}
+    inputs = {"data-model": {**_five_level_data_model(), "entities": _five_level_data_model()["entities"] + [{"name": "unrelated_entity"}]}}
+    errors = entity_crud_coverage(values, inputs)
+    assert any("MajorProcess" in e or "SubProcess" in e for e in errors)
+
+
+def test_entity_crud_coverage_ordinary_parent_child_pair_still_needs_two_screens():
+    """A single parent-child relationship (component size 2) does NOT
+    qualify as a deep hierarchy chain -- normal dual-screen CRUD still
+    applies, unaffected by the chain exemption."""
+    values = {"mockup-spec": {"screens": [{"id": "s", "entity_id": "audit_plan"}]}}
+    inputs = {"data-model": {
+        "entities": [{"name": "audit_plan"}, {"name": "audit_unit"}],
+        "relationships": [{"from_entity": "audit_plan", "to_entity": "audit_unit", "cardinality": "one-to-many"}],
+    }}
+    errors = entity_crud_coverage(values, inputs)
+    assert any("only ONE screen" in e and "audit_plan" in e for e in errors)
+
+
+def _real_audit_data_model():
+    """The exact live data model that exposed the connected-components
+    bug: AuditPlan/AuditUnit/AuditProject are upstream of the fieldwork
+    chain but must NOT be swept into its exemption; Procedure is the
+    chain's legitimate 5th member even though it also branches into
+    Workpaper and AuditIssue afterward."""
+    names = ["AuditPlan", "AuditUnit", "AuditProject", "PlanningDocument", "MajorProcess", "SubProcess",
+             "RiskStatement", "TestObjective", "Procedure", "Workpaper", "AuditIssue", "ReviewNote", "WrapUpDocument"]
+    return {
+        "entities": [{"name": n} for n in names],
+        "relationships": [
+            {"from_entity": "AuditPlan", "to_entity": "AuditProject", "cardinality": "one-to-many"},
+            {"from_entity": "AuditUnit", "to_entity": "AuditProject", "cardinality": "one-to-many"},
+            {"from_entity": "AuditProject", "to_entity": "PlanningDocument", "cardinality": "one-to-many"},
+            {"from_entity": "AuditProject", "to_entity": "MajorProcess", "cardinality": "one-to-many"},
+            {"from_entity": "AuditProject", "to_entity": "WrapUpDocument", "cardinality": "one-to-many"},
+            {"from_entity": "MajorProcess", "to_entity": "SubProcess", "cardinality": "one-to-many"},
+            {"from_entity": "SubProcess", "to_entity": "RiskStatement", "cardinality": "one-to-many"},
+            {"from_entity": "RiskStatement", "to_entity": "TestObjective", "cardinality": "one-to-many"},
+            {"from_entity": "TestObjective", "to_entity": "Procedure", "cardinality": "one-to-many"},
+            {"from_entity": "Procedure", "to_entity": "Workpaper", "cardinality": "one-to-many"},
+            {"from_entity": "Procedure", "to_entity": "AuditIssue", "cardinality": "one-to-many"},
+            {"from_entity": "Workpaper", "to_entity": "ReviewNote", "cardinality": "one-to-many"},
+        ],
+    }
+
+
+def test_hierarchy_chain_detection_matches_the_real_five_level_register_exactly():
+    components = _hierarchy_chain_components(_real_audit_data_model())
+    assert len(components) == 1
+    assert components[0] == {"MajorProcess", "SubProcess", "RiskStatement", "TestObjective", "Procedure"}
+
+
+def test_entity_crud_coverage_does_not_over_exempt_upstream_or_branching_entities():
+    """Reproduces the live bug exactly: a loose connected-components check
+    swept AuditPlan/AuditUnit/AuditProject (merely upstream of the chain)
+    and Workpaper/AuditIssue/ReviewNote (past the branch point) into the
+    exemption. All of these must still require their own 2 screens; only
+    the true 5-level chain is exempt."""
+    screens = [
+        {"id": "fieldwork_editor", "entity_id": "MajorProcess"},  # the one shared chain screen -- satisfies all 5 levels
+        {"id": "plan_list", "entity_id": "AuditPlan"},  # only 1 screen each -- should still be flagged
+        {"id": "unit_list", "entity_id": "AuditUnit"},
+        {"id": "project_list", "entity_id": "AuditProject"},
+        {"id": "workpaper_list", "entity_id": "Workpaper"},
+        {"id": "issue_list", "entity_id": "AuditIssue"},
+        {"id": "review_note_list", "entity_id": "ReviewNote"},
+        {"id": "planning_doc_list", "entity_id": "PlanningDocument"},
+        {"id": "wrapup_list", "entity_id": "WrapUpDocument"},
+    ]
+    values = {"mockup-spec": {"screens": screens}}
+    inputs = {"data-model": _real_audit_data_model()}
+    errors = entity_crud_coverage(values, inputs)
+    single_screen_error = next((e for e in errors if "only ONE screen" in e), None)
+    assert single_screen_error is not None
+    for name in ["AuditPlan", "AuditUnit", "AuditProject", "Workpaper", "AuditIssue", "ReviewNote", "PlanningDocument", "WrapUpDocument"]:
+        assert name in single_screen_error
+    # The exempted chain members must NOT appear in the single-screen error.
+    for name in ["MajorProcess", "SubProcess", "RiskStatement", "TestObjective", "Procedure"]:
+        assert name not in single_screen_error
 
 
 def test_entity_crud_coverage_accepts_list_plus_form_pairs():

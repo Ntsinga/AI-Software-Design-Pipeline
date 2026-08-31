@@ -17,8 +17,14 @@ class ProviderSettings:
     provider: str = "stub"
     model: str = "deterministic-fixture"
     api_key: str | None = None
-    max_output_tokens: int = 3500
-    timeout_seconds: float = 180.0
+    # A single mockups-step response can now hold 30-40+ real, self-
+    # contained HTML pages (one per workflow screen + entity CRUD screen) --
+    # 3500 was fine for the original handful of screens but silently
+    # truncated once the domain grew past ~15 entities, dropping whichever
+    # workflow/screens fell near the end of the response. Same "raise as
+    # the domain grows" pattern already applied to max_tool_iterations.
+    max_output_tokens: int = 16000
+    timeout_seconds: float = 300.0
     max_tool_iterations: int = 20
 
     @property
@@ -75,8 +81,8 @@ def load_provider_settings(root: Path | str, environ: Mapping[str, str] | None =
     model = value("DESIGN_PIPELINE_MODEL") or value(f"{prefix}_MODEL")
     api_key = value(f"{prefix}_API_KEY") or None
     try:
-        max_output_tokens = int(value("DESIGN_PIPELINE_MAX_OUTPUT_TOKENS", "3500"))
-        timeout_seconds = float(value("DESIGN_PIPELINE_TIMEOUT_SECONDS", "180"))
+        max_output_tokens = int(value("DESIGN_PIPELINE_MAX_OUTPUT_TOKENS", "16000"))
+        timeout_seconds = float(value("DESIGN_PIPELINE_TIMEOUT_SECONDS", "300"))
         max_tool_iterations = int(value("DESIGN_PIPELINE_MAX_TOOL_ITERATIONS", "20"))
     except ValueError as exc:
         raise ProviderConfigurationError("model token, timeout, and tool-iteration settings must be numeric") from exc

@@ -532,6 +532,7 @@ window.addEventListener("message", (event) => {
         await api("/artifacts/mockup-pages/comments", { method: "POST", body: JSON.stringify({ text, location: { kind: "element", screen_id: activeId, selector, text_snippet: textSnippet } }) });
         showNotice("Comment pinned -- retry mockups to have the agent apply it.");
         loadPinsForScreen(activeId);
+        renderScreenComments(activeId);
       } catch (error) { showNotice(error.message, true); }
     });
     setCommentMode(document.querySelector(".mock-frame-iframe"), false);
@@ -591,18 +592,24 @@ async function renderMockups() {
   const frame = html
     ? `<div class="mock-frame-wrap"><iframe class="mock-frame-iframe" title="${escapeHtml(activeName)} mockup" sandbox="allow-scripts" srcdoc="${escapeHtml(html)}"></iframe><div class="mock-pin-layer"></div></div>`
     : `<div class="mock-frame"><header><div><p class="eyebrow">INTERACTIVE MOCKUP</p><h3>${escapeHtml(activeName)}</h3>${active?.purpose ? `<p class="muted-copy">${escapeHtml(active.purpose)}</p>` : ""}</div><span class="status-pill">Synthetic data</span></header><div class="mock-content"><div class="mock-block"><strong>Workflow status</strong><p class="muted-copy">Awaiting review</p></div><div class="mock-block"><strong>Linked artifacts</strong><p class="muted-copy">System model · Architecture</p></div><div class="mock-block"><strong>Actions</strong><p class="muted-copy">Approve · Request changes</p></div></div></div>`;
-  target.innerHTML = `<div class="screen-list">${buildScreenList(screens, state.currentMockup, workflowsById)}</div><div class="mock-column">${toolbar}${frame}</div>`;
+  target.innerHTML = `<div class="screen-list">${buildScreenList(screens, state.currentMockup, workflowsById)}</div><div class="mock-column">${toolbar}<div id="mock-comments" class="mock-comments"></div>${frame}</div>`;
   target.querySelectorAll("[data-screen]").forEach((button) => button.addEventListener("click", () => { state.currentMockup = Number(button.dataset.screen); renderMockups(); }));
   target.querySelector("[data-comment-screen]")?.addEventListener("click", () => {
     addLocatedComment("mockup-pages", { kind: "screen", screen_id: activeId }, `Comment on the "${activeName}" screen:`);
   });
+  if (html) renderScreenComments(activeId);
   target.querySelector("[data-comment-element]")?.addEventListener("click", (event) => {
     const iframe = document.querySelector(".mock-frame-iframe");
     setCommentMode(iframe, !state.mockupCommentMode);
   });
   target.querySelector("[data-retry-screen]")?.addEventListener("click", async (event) => {
-    if (!(await appConfirm(`Only the "${activeName}" screen will be regenerated -- every other screen stays exactly as it is now. Any comments pinned to this screen are applied.`, { title: "Regenerate this screen", confirmLabel: "Regenerate" }))) return;
+    // Capture the button BEFORE the await -- event.currentTarget is reset
+    // to null once synchronous event dispatch finishes, which happens
+    // before this async handler resumes past the first await. Reading it
+    // afterward threw a silent, uncaught TypeError here (nothing ever
+    // reached the try block, no spinner, no notice, no retry request).
     const button = event.currentTarget;
+    if (!(await appConfirm(`Only the "${activeName}" screen will be regenerated -- every other screen stays exactly as it is now. Any comments pinned to this screen are applied.`, { title: "Regenerate this screen", confirmLabel: "Regenerate" }))) return;
     const originalHtml = button.innerHTML;
     button.disabled = true;
     button.innerHTML = `<span class="btn-spinner"></span> Regenerating...`;
@@ -624,6 +631,23 @@ async function renderMockups() {
 // element's on-screen rect (reported by the bridge via mockup-locate).
 // Clicking a pin opens a compact inline popover right there -- no full
 // dialog -- for both reading and adding element comments.
+// Whole-screen comments (location.kind === "screen") had nowhere to show
+// up in the UI before this -- only element-scoped comments got a pin.
+// This lists EVERY comment for the active screen (both kinds) so leaving
+// one is actually visible, not just silently saved.
+async function renderScreenComments(screenId) {
+  const container = document.getElementById("mock-comments");
+  if (!container) return;
+  let comments = [];
+  try { comments = await api("/artifacts/mockup-pages/comments"); } catch (error) { return; }
+  const forScreen = comments.filter((c) => c.location?.screen_id === screenId);
+  if (!forScreen.length) { container.innerHTML = ""; container.classList.add("hidden"); return; }
+  container.classList.remove("hidden");
+  container.innerHTML = `<p class="mock-comments-label">💬 ${forScreen.length} comment${forScreen.length === 1 ? "" : "s"} on this screen</p>` + forScreen.map((c) => {
+    const scope = c.location?.kind === "element" ? `on <code>${escapeHtml(c.location.selector || "")}</code>` : "on the whole screen";
+    return `<div class="mock-comment-row"><span class="mock-comment-scope">${scope}</span><span class="mock-comment-text">${escapeHtml(c.text)}</span></div>`;
+  }).join("");
+}
 async function loadPinsForScreen(screenId) {
   const layer = document.querySelector(".mock-pin-layer");
   if (!layer) return;
