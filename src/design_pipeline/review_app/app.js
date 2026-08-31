@@ -640,7 +640,9 @@ async function renderScreenComments(screenId) {
   if (!container) return;
   let comments = [];
   try { comments = await api("/artifacts/mockup-pages/comments"); } catch (error) { return; }
-  const forScreen = comments.filter((c) => c.location?.screen_id === screenId);
+  // Resolved comments (already applied by a successful retry) don't show
+  // up here anymore -- they'd otherwise keep piling up indefinitely.
+  const forScreen = comments.filter((c) => c.status === "open" && c.location?.screen_id === screenId);
   if (!forScreen.length) { container.innerHTML = ""; container.classList.add("hidden"); return; }
   container.classList.remove("hidden");
   container.innerHTML = `<p class="mock-comments-label">💬 ${forScreen.length} comment${forScreen.length === 1 ? "" : "s"} on this screen</p>` + forScreen.map((c) => {
@@ -654,7 +656,7 @@ async function loadPinsForScreen(screenId) {
   layer.innerHTML = "";
   let comments = [];
   try { comments = await api("/artifacts/mockup-pages/comments"); } catch (error) { return; }
-  const elementComments = comments.filter((c) => c.location?.kind === "element" && c.location?.screen_id === screenId);
+  const elementComments = comments.filter((c) => c.status === "open" && c.location?.kind === "element" && c.location?.screen_id === screenId);
   if (!elementComments.length) return;
   const iframe = document.querySelector(".mock-frame-iframe");
   const selectors = [...new Set(elementComments.map((c) => c.location.selector))];

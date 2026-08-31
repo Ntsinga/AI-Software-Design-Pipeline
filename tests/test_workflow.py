@@ -136,6 +136,70 @@ def test_retry_regenerates_all_co_generated_outputs(runtime):
     assert runtime.store.artifacts.get("mockup-pages").metadata.version == pages_v2 + 1
 
 
+def test_retry_resolves_comments_so_they_are_not_resent_next_time(runtime):
+    """A comment used by a successful retry must not keep getting resent
+    on every future retry -- it should be marked resolved and excluded
+    from the next call's `comments` argument."""
+    runtime.run()
+    runtime.approve("system-model")
+    runtime.run()
+    runtime.approve("data-model")
+    runtime.run()
+    runtime.approve("architecture-model")
+    runtime.run()
+
+    comment = runtime.add_comment("architecture-model", "Add a boundary note")
+    assert comment.status == "open"
+
+    seen_comments_first: list[str] = []
+    seen_comments_second: list[str] = []
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        target = seen_comments_first if not seen_comments_first else seen_comments_second
+        target.extend(c.text for c in comments or [])
+        return ({o: {} for o in outputs}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    runtime.retry("architecture-model")
+    assert seen_comments_first == ["Add a boundary note"]
+    resolved = next(c for c in runtime.store.list_comments("architecture-model") if c.id == comment.id)
+    assert resolved.status == "resolved"
+    assert resolved.resolved_at is not None
+
+    runtime.retry("architecture-model")  # second retry, no new comments added
+    assert seen_comments_second == []  # the resolved comment must not be resent
+
+
+def test_retry_screen_resolves_its_own_comments(runtime):
+    runtime.run()
+    runtime.approve("system-model")
+    runtime.run()
+    runtime.approve("data-model")
+    runtime.run()
+    runtime.approve("architecture-model")
+    runtime.run()
+    target_id = runtime.store.artifacts.get("mockup-pages").content[0]["screen_id"]
+
+    comment = runtime.add_comment("mockup-pages", "Remove the stat cards", location={"kind": "screen", "screen_id": target_id})
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        assert any(c.text == "Remove the stat cards" for c in comments or [])
+        return ({"mockup-page-patch": {"screen_id": target_id, "html": "<html>ok</html>"}}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    runtime.retry_screen(target_id)
+    resolved = next(c for c in runtime.store.list_comments("mockup-pages") if c.id == comment.id)
+    assert resolved.status == "resolved"
+
+    # A second retry_screen call must not see the now-resolved comment.
+    def spy_second(agent_id, outputs, inputs, comments=None, instruction=None):
+        assert comments == []
+        return ({"mockup-page-patch": {"screen_id": target_id, "html": "<html>ok2</html>"}}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy_second  # type: ignore[assignment]
+    runtime.retry_screen(target_id)
+
+
 def test_retry_loads_comments_from_all_co_generated_siblings(runtime):
     """A comment on mockup-pages must still reach the agent when the user
     retries mockup-spec (they regenerate together, so both sets of

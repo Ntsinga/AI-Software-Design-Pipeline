@@ -740,12 +740,16 @@ class DesignRuntime:
         # Load comments from every sibling in this step, not just the
         # named target. Users comment on the mockup-pages screen they see,
         # then retry mockup-spec (or vice versa) -- both sets of feedback
-        # must reach the agent since one call regenerates both.
+        # must reach the agent since one call regenerates both. Only OPEN
+        # comments -- once a comment has actually been applied by a
+        # successful retry (below), it's marked resolved so it doesn't
+        # keep getting resent (and re-confusing the model) on every future
+        # retry indefinitely.
         comments: list[Comment] = []
         seen_comment_ids: set[str] = set()
         for output_id in step_outputs:
             for comment in self.store.list_comments(output_id):
-                if comment.id not in seen_comment_ids:
+                if comment.status == "open" and comment.id not in seen_comment_ids:
                     seen_comment_ids.add(comment.id)
                     comments.append(comment)
 
@@ -807,8 +811,20 @@ class DesignRuntime:
                 state.step_states[step.id] = StepStatus.PENDING
                 state.workflow_status = WorkflowStatus.PAUSED
         self.store.save_state(state)
+        self._resolve_comments(comments)
         self.store.append_event("ARTIFACT_RETRIED", artifact_id=artifact_id, details={"version": primary.metadata.version, "parent_version": current.metadata.version, "instruction": instruction, "co_regenerated": regenerated})
         return primary
+
+    def _resolve_comments(self, comments: list[Comment]) -> None:
+        """Mark comments as applied once a retry that used them succeeds,
+        so they stop being resent (and re-confusing the model) on every
+        subsequent retry. Comments stay in history -- resolved, not
+        deleted -- same as every other artifact in this app never being
+        silently thrown away."""
+        for comment in comments:
+            comment.status = "resolved"
+            comment.resolved_at = utc_now()
+            self.store.save_comment(comment)
 
     def retry_screen(self, screen_id: str, instruction: str | None = None) -> StoredArtifact:
         """Regenerate exactly ONE mockup screen's HTML, splicing it back
@@ -833,10 +849,11 @@ class DesignRuntime:
 
         spec_artifact = self.store.artifacts.get("mockup-spec")
 
-        # Only comments scoped to this specific screen (element- or
+        # Only OPEN comments scoped to this specific screen (element- or
         # screen-level) -- a comment on a different screen has no business
-        # steering this one.
-        comments = [comment for comment in self.store.list_comments("mockup-pages") if (comment.location or {}).get("screen_id") == screen_id]
+        # steering this one, and an already-applied (resolved) comment
+        # shouldn't keep getting resent on every future retry.
+        comments = [comment for comment in self.store.list_comments("mockup-pages") if comment.status == "open" and (comment.location or {}).get("screen_id") == screen_id]
 
         step = next((candidate for candidate in self.workflow().steps if "mockup-pages" in candidate.outputs), None)
         input_ids = [input_id for input_id in (step.inputs if step else []) if input_id not in ("mockup-spec",)]
@@ -874,6 +891,7 @@ class DesignRuntime:
             parent_version=pages_artifact.metadata.version,
         )
         self.store.artifacts.update_status("mockup-pages", ArtifactStatus.SUPERSEDED, pages_artifact.metadata.version)
+        self._resolve_comments(comments)
         self.store.append_event("MOCKUP_SCREEN_RETRIED", artifact_id="mockup-pages", details={"screen_id": screen_id, "version": saved.metadata.version, "parent_version": pages_artifact.metadata.version, "instruction": instruction})
         return saved
 
