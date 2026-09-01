@@ -862,10 +862,24 @@ function renderHistoryList(history) {
 // yet", making an actually-successful upload look like it vanished. The
 // BRD_INGESTED event it does append is persisted (survives reload), so
 // surface that here instead of just leaving it buried in the History tab.
+//
+// "Any artifacts exist" is NOT the same as "this upload is already
+// reflected" -- a project can generate its first pass from one BRD, then
+// have a *newer* BRD uploaded on top of it later (revising requirements
+// mid-project, or a follow-up doc). That newer upload is staged and real,
+// but the naive "hide once artifacts.length > 0" check hid the banner for
+// it anyway -- observed live: uploading a fresh AuditModule.docx onto an
+// already-generated project showed nothing at all, no different from the
+// upload silently failing. Compare timestamps instead: only hide once the
+// current `brd` artifact was generated at or after this exact upload.
 function renderBrdStatus(history) {
   const el = $("#brd-status");
   const lastIngest = history.filter((event) => event.event_type === "BRD_INGESTED").at(-1);
-  if (!lastIngest || state.artifacts.length > 0) { el.classList.add("hidden"); el.textContent = ""; return; }
+  if (!lastIngest) { el.classList.add("hidden"); el.textContent = ""; return; }
+  const brdArtifact = state.artifacts.find((item) => item.logical_id === "brd");
+  const generatedAt = brdArtifact?.generated_by?.generated_at;
+  const alreadyReflected = generatedAt && new Date(generatedAt) >= new Date(lastIngest.timestamp);
+  if (alreadyReflected) { el.classList.add("hidden"); el.textContent = ""; return; }
   el.classList.remove("hidden");
   el.textContent = `📄 ${lastIngest.details?.filename || "Document"} uploaded ${new Date(lastIngest.timestamp).toLocaleString()} -- click "Generate / resume" above to build your project from it.`;
 }
