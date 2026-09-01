@@ -850,13 +850,27 @@ async function renderReferencesStrip(stage) {
     } catch (error) { showNotice(error.message, true); button.disabled = false; }
   }));
 }
-async function renderHistory() {
-  const target = $("#history-list"); const history = await api("/history");
+function renderHistoryList(history) {
+  const target = $("#history-list");
   if (!history.length) return empty(target, "No recorded events yet.");
   target.className = "history-list"; target.innerHTML = history.slice().reverse().map((event) => `<div class="history-item"><div><strong>${titleCase(event.event_type)}</strong><p>${event.artifact_id || event.step_id || "Project"}</p></div><p>${new Date(event.timestamp).toLocaleString()}</p></div>`).join("");
 }
+// Uploading a BRD only stages it (see runtime.ingest_brd*) -- it doesn't
+// create an artifact, so there was previously nothing on Overview to show
+// for it after a reload: the upload toast is gone, the file input resets
+// to "No file selected", and the artifact list still says "No artifacts
+// yet", making an actually-successful upload look like it vanished. The
+// BRD_INGESTED event it does append is persisted (survives reload), so
+// surface that here instead of just leaving it buried in the History tab.
+function renderBrdStatus(history) {
+  const el = $("#brd-status");
+  const lastIngest = history.filter((event) => event.event_type === "BRD_INGESTED").at(-1);
+  if (!lastIngest || state.artifacts.length > 0) { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.classList.remove("hidden");
+  el.textContent = `📄 ${lastIngest.details?.filename || "Document"} uploaded ${new Date(lastIngest.timestamp).toLocaleString()} -- click "Generate / resume" above to build your project from it.`;
+}
 async function refresh() {
-  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-name").textContent = state.status.project_id || "Design Pipeline"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderHistory(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
+  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-name").textContent = state.status.project_id || "Design Pipeline"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); const history = await api("/history"); renderHistoryList(history); renderBrdStatus(history); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
 }
 async function openArtifact(id) {
   try {
