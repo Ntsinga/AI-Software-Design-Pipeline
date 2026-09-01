@@ -39,6 +39,7 @@ from ..models import (
 )
 from ..storage import DEFAULT_PROJECT_ID, ArtifactRegistry, ProjectPaths, _safe_project_id
 from .engine import build_engine
+from .migrate import ensure_schema
 from .schema import approvals, artifacts, comments, dependency_graph, execution_events, metadata as db_metadata, project_state, projects, tasks
 
 
@@ -231,6 +232,10 @@ class PostgresProjectStore:
         # Idempotent: safe to call on every construction (e.g. every CLI
         # invocation), including against a brand new, empty database.
         db_metadata.create_all(self._engine, checkfirst=True)
+        # create_all above only creates brand-new tables -- it does nothing
+        # for a table that already existed with an older column set (see
+        # migrate.py's docstring for the production incident this caused).
+        ensure_schema(self._engine)
         self.artifacts = PostgresArtifactRegistry(self._engine, self._project_id)
 
     def initialize(self, project_id: str | None = None) -> ProjectState:
@@ -380,6 +385,7 @@ class PostgresProjectRegistry:
     def __init__(self, database_url: str):
         self._engine = build_engine(database_url)
         db_metadata.create_all(self._engine, checkfirst=True)
+        ensure_schema(self._engine)
 
     def list_projects(self) -> list[dict[str, str]]:
         with self._engine.connect() as conn:
