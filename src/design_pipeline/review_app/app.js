@@ -889,7 +889,7 @@ async function refresh() {
   // into "+ New project" ("Audit Module"). The friendly name lives on the
   // matching entry in state.projects (populated by refreshProjects, which
   // always runs before this), not in /status at all.
-  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-name").textContent = state.projects.find((project) => project.id === state.status.project_id)?.name || state.status.project_id || "Design Pipeline"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); const history = await api("/history"); renderHistoryList(history); renderBrdStatus(history); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
+  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-header-name").textContent = state.projects.find((project) => project.id === state.status.project_id)?.name || state.status.project_id || "Project"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); const history = await api("/history"); renderHistoryList(history); renderBrdStatus(history); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
 }
 async function openArtifact(id) {
   try {
@@ -922,63 +922,84 @@ async function action(path, body = {}, loadingNotice = null) {
 // update the hash; a hashchange listener applies the change. This keeps
 // the active tab (and current project) across refreshes.
 const VALID_TABS = new Set(["overview", "system", "data-model", "architecture", "mockups", "history"]);
+// A project-scoped URL always looks like #/projects/<id>/<tab>. Anything
+// else -- the bare root, "#/projects" with no id, a stale/unknown project
+// id -- lands on the Projects picker (projectId null, tab "projects")
+// rather than guessing which project to open. Landing used to default to
+// a hardcoded "default" project id that may not exist in a given
+// deployment at all (observed live: every request 404'd, and the UI
+// looked indistinguishable from a freshly-empty, uninitialized project).
+// Showing the picker instead means the user always lands somewhere real.
 function parseHash() {
   const raw = window.location.hash.replace(/^#\/?/, "");
   const parts = raw.split("/").filter(Boolean);
-  let projectId = "default", tab = "overview";
-  if (parts[0] === "projects" && parts[1]) projectId = decodeURIComponent(parts[1]);
-  if (parts[2] && VALID_TABS.has(parts[2])) tab = parts[2];
-  else if (parts[0] && VALID_TABS.has(parts[0])) tab = parts[0]; // #/mockups short-form
-  return { projectId, tab };
+  if (parts[0] === "projects" && parts[1]) {
+    const projectId = decodeURIComponent(parts[1]);
+    const tab = (parts[2] && VALID_TABS.has(parts[2])) ? parts[2] : "overview";
+    return { projectId, tab };
+  }
+  return { projectId: null, tab: "projects" };
 }
 function updateHash(patch = {}) {
   const current = parseHash();
   const next = { ...current, ...patch };
-  const target = `#/projects/${encodeURIComponent(next.projectId)}/${next.tab}`;
+  const target = next.projectId ? `#/projects/${encodeURIComponent(next.projectId)}/${next.tab}` : "#/projects";
   if (window.location.hash !== target) window.location.hash = target;
 }
-function applyActiveTab(tab) {
+// Toggles which "level" is visible: the Projects picker (no project open),
+// or an open project's own workspace -- its tab strip (.project-tabs) and
+// name/run-controls bar (.project-header), both hidden on the picker.
+function applyActiveTab(tab, projectId) {
   document.querySelectorAll(".nav-link").forEach((link) => link.classList.toggle("active", link.dataset.view === tab));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === `${tab}-view`));
+  const inProject = tab !== "projects" && !!projectId;
+  document.querySelector(".project-tabs")?.classList.toggle("hidden", !inProject);
+  document.querySelector(".project-header")?.classList.toggle("hidden", !inProject);
 }
 document.addEventListener("click", (event) => { if (!event.target.closest(".mock-pin-popover, .mock-pin")) closePinPopover(); });
-document.querySelectorAll(".nav-link").forEach((button) => button.addEventListener("click", () => updateHash({ tab: button.dataset.view })));
+document.querySelectorAll(".nav-link").forEach((button) => button.addEventListener("click", () => {
+  // The "Projects" link is the one nav-link that isn't scoped to the
+  // currently-open project -- it must explicitly clear projectId (a plain
+  // {tab: "projects"} patch would keep whatever project was already open,
+  // producing a nonsensical #/projects/<id>/projects hash).
+  if (button.dataset.view === "projects") updateHash({ projectId: null, tab: "projects" });
+  else updateHash({ tab: button.dataset.view });
+}));
 async function onHashChange() {
   const { projectId, tab } = parseHash();
-  applyActiveTab(tab);
-  if (projectId !== state.projectId) { state.projectId = projectId; await refresh(); }
+  applyActiveTab(tab, projectId);
+  if (projectId !== state.projectId) {
+    state.projectId = projectId;
+    if (projectId) await refresh(); else await renderProjectsView();
+  }
 }
 window.addEventListener("hashchange", onHashChange);
 
 async function refreshProjects() {
   try { state.projects = await api("/projects"); } catch (error) { state.projects = []; }
-  // "default" (parseHash's fallback when the URL carries no #/projects/...
-  // segment -- i.e. just visiting the plain root URL) is a hash fallback
-  // value, not a guarantee any project with that id actually exists.
-  // Observed live: a deployment whose only project is "audit-module" kept
-  // requesting /projects/default/status forever (404), the dropdown showed
-  // blank (its value set to an id absent from its own options), and every
-  // panel was stuck on "No artifacts yet" -- indistinguishable from the
-  // project genuinely being empty. Fall back to the first real project
-  // whenever the current id isn't one of them.
-  if (state.projects.length && !state.projects.some((project) => project.id === state.projectId)) {
-    state.projectId = state.projects[0].id;
-  }
-  const select = $("#project-select"); if (!select) return;
-  select.innerHTML = state.projects.map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name || project.id)}</option>`).join("");
-  select.value = state.projectId;
 }
-$("#project-select")?.addEventListener("change", (event) => updateHash({ projectId: event.target.value }));
-$("#new-project-button")?.addEventListener("click", async () => {
+async function renderProjectsView() {
+  await refreshProjects();
+  const grid = $("#project-cards");
+  const cards = state.projects
+    .map((project) => `<button class="project-card" data-project-card="${escapeHtml(project.id)}"><span class="project-card-name">${escapeHtml(project.name || project.id)}</span><span class="project-card-id">${escapeHtml(project.id)}</span></button>`)
+    .join("");
+  grid.className = "project-card-grid";
+  grid.innerHTML = cards || `<p class="empty-state">No projects yet. Click "+ New project" above to create one.</p>`;
+  grid.querySelectorAll("[data-project-card]").forEach((card) => card.addEventListener("click", () => updateHash({ projectId: card.dataset.projectCard, tab: "overview" })));
+}
+async function createProjectFlow() {
   const name = await appPrompt("Name your project. Letters, digits, and dashes work best.", { title: "New project", placeholder: "e.g. Customer Portal Redesign", confirmLabel: "Create project" });
   if (!name) return;
   try {
     const project = await api("/projects", { method: "POST", body: JSON.stringify({ name: name.trim() }) });
     await refreshProjects();
-    updateHash({ projectId: project.id, tab: "overview" });
     showNotice(`Project "${project.name}" created.`);
+    updateHash({ projectId: project.id, tab: "overview" });
   } catch (error) { showNotice(error.message, true); }
-});
+}
+$("#new-project-button")?.addEventListener("click", createProjectFlow);
+$("#back-to-projects")?.addEventListener("click", () => updateHash({ projectId: null, tab: "projects" }));
 
 $("#document-input").addEventListener("change", (event) => { $("#file-name").textContent = event.target.files[0]?.name || "No file selected"; });
 $("#provider-select").addEventListener("change", async (event) => { const previous = state.status?.provider?.provider || "stub"; try { const provider = await api("/provider", { method: "PUT", body: JSON.stringify({ provider: event.target.value }) }); showNotice(`Switched to ${titleCase(provider.provider)}.`); await refresh(); } catch (error) { event.target.value = previous; showNotice(error.message, true); } });
@@ -1174,14 +1195,14 @@ $("#comment-form").addEventListener("submit", async (event) => {
     }
   } catch (error) { showNotice(error.message, true); }
 });
-// Boot: resolve current project + tab from the URL hash, populate the
-// project switcher, then run the initial refresh. If no hash is set,
-// default to #/projects/default/overview and let hashchange fire.
+// Boot: resolve current project + tab from the URL hash, then render
+// whichever level that resolves to -- the Projects picker (no hash, or no
+// project in it) or an open project's own workspace.
 (async () => {
   const { projectId, tab } = parseHash();
   state.projectId = projectId;
-  applyActiveTab(tab);
-  await refreshProjects(); // may correct state.projectId -- see its own comment
-  await refresh();
-  if (parseHash().projectId !== state.projectId) updateHash({ projectId: state.projectId, tab });
+  applyActiveTab(tab, projectId);
+  if (projectId) { await refreshProjects(); await refresh(); }
+  else await renderProjectsView();
+  updateHash({ projectId, tab });
 })();
