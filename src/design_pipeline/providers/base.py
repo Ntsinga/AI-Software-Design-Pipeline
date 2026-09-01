@@ -37,6 +37,24 @@ class ProviderRequest(BaseModel):
     # Tool results being fed back in on a continuation turn, keyed by the
     # ToolCall.id they answer.
     tool_results: dict[str, str] = Field(default_factory=dict)
+    # Declared output name -> {"kind": "object"|"array", "schema": <nested
+    # dict>|None}, when the caller wants the provider to *enforce* (not
+    # just describe in the prompt) the final JSON answer's shape. Providers
+    # that support native structured output (Gemini's responseSchema,
+    # OpenAI's text.format json_schema) wire this in; providers without an
+    # equivalent (Anthropic) ignore it and fall back to prompt guidance plus
+    # ProviderBackedAgent's post-hoc recovery. `schema`, built by
+    # `ProviderBackedAgent._field_schema`, recurses all the way down through
+    # nested pydantic models/lists/Optionals with real required properties
+    # at every level -- without that, a model can satisfy an unconstrained
+    # `{"type": "object"}` slot (or a nested one, one level down) with `{}`
+    # and technically not be wrong (confirmed live, twice: mockup-page-patch,
+    # then mockup-screen-addition once its nested `screen`/`page` objects
+    # were still unconstrained at depth 1). `schema: None` means the
+    # output's type is too complex to safely translate at all (a real union
+    # of several types, self-reference, ...) -- top-level key enforcement
+    # only in that case.
+    response_object_keys: dict[str, dict[str, Any]] | None = None
 
 
 class ProviderResponse(BaseModel):

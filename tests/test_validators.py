@@ -8,7 +8,7 @@ import pytest
 from design_pipeline.agents import ProviderBackedAgent
 from design_pipeline.models import AgentDefinition
 from design_pipeline.providers.base import ProviderRequest, ProviderResponse
-from design_pipeline.validators import _hierarchy_chain_components, data_model_relationships_reference_known_entities, entity_crud_coverage, no_raw_ids_rendered_in_html, workflow_id_coverage
+from design_pipeline.validators import _hierarchy_chain_components, data_model_relationships_reference_known_entities, entity_crud_coverage, no_control_characters_in_html, no_raw_ids_rendered_in_html, workflow_id_coverage
 
 
 def _definition() -> AgentDefinition:
@@ -276,6 +276,30 @@ def test_no_raw_ids_rendered_checks_single_screen_patch_against_upstream_spec():
 
 def test_no_raw_ids_rendered_is_noop_without_a_spec():
     assert no_raw_ids_rendered_in_html({"mockup-pages": [{"screen_id": "s1", "html": "<h1>x</h1>"}]}, {}) == []
+
+
+def test_no_control_characters_rejects_a_mangled_emoji():
+    """Reproduces the live failure: a single-screen retry that should only
+    have removed one unrelated button instead came back with its
+    decorative folder icon (a 4-byte non-BMP emoji) replaced by four
+    literal \\x01 control bytes -- renders as boxes/tofu, never legitimate
+    content."""
+    values = {"mockup-page-patch": {"screen_id": "s1", "html": "<div>\x01\x01\x01\x01 Fieldwork</div>"}}
+    errors = no_control_characters_in_html(values, {})
+    assert any("s1" in e and "0x01" in e for e in errors)
+
+
+def test_no_control_characters_accepts_clean_html_including_real_emoji():
+    values = {"mockup-page-patch": {"screen_id": "s1", "html": "<div>\U0001F4C1 Fieldwork\n\tOK</div>"}}
+    assert no_control_characters_in_html(values, {}) == []
+
+
+def test_no_control_characters_checks_all_three_generation_shapes():
+    bad_html = "<div>\x02bad</div>"
+    assert no_control_characters_in_html({"mockup-pages": [{"screen_id": "s1", "html": bad_html}]}, {}) != []
+    assert no_control_characters_in_html({"mockup-page-patch": {"screen_id": "s1", "html": bad_html}}, {}) != []
+    assert no_control_characters_in_html({"mockup-screen-addition": {"page": {"screen_id": "s1", "html": bad_html}}}, {}) != []
+    assert no_control_characters_in_html({"mockup-screen-addition": {"page": {"screen_id": "s1", "html": "<div>ok</div>"}, "updated_source_page": {"screen_id": "s2", "html": bad_html}}}, {}) != []
 
 
 def test_workflow_id_coverage_is_noop_when_architecture_absent():

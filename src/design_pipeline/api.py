@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import base64
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("design_pipeline.api")
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -53,6 +56,15 @@ class DataRelationshipRequest(BaseModel):
 
 class RetryRequest(BaseModel):
     instruction: str | None = None
+
+
+class AddMockupScreenRequest(BaseModel):
+    description: str = Field(min_length=1)
+    link_from_screen_id: str | None = None
+
+
+class SplitMockupScreenRequest(BaseModel):
+    extract_description: str = Field(min_length=1)
 
 
 class ProviderSelection(BaseModel):
@@ -138,11 +150,18 @@ def create_app(root: Path | str = "."):
             result = function(*args, **kwargs)
             return result.model_dump(mode="json") if hasattr(result, "model_dump") else result
         except (FileNotFoundError, ValueError) as exc:
+            # Log the full detail server-side too, not just in the HTTP
+            # response -- a 400's body is easy to lose (browser dev tools
+            # closed, notice dismissed) and this is often the only trace of
+            # exactly what a live model returned when it didn't match the
+            # declared contract.
+            logger.warning("%s failed: %s", function.__qualname__, exc)
             raise HTTPException(status_code=404 if isinstance(exc, FileNotFoundError) else 400, detail=str(exc)) from exc
         except LiveProviderError as exc:
             # The selected model provider's API itself failed (network,
             # rate limit, quota, malformed response) -- a clean, retryable
             # error for the caller, not an unhandled 500.
+            logger.warning("%s failed: %s", function.__qualname__, exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/", include_in_schema=False)
@@ -493,6 +512,22 @@ def create_app(root: Path | str = "."):
     @app.post("/mockup-pages/screens/{screen_id}/retry")
     def retry_screen_legacy(screen_id: str, request: RetryRequest | None = None):
         return call(runtime_for(DEFAULT_PROJECT_ID).retry_screen, screen_id, (request or RetryRequest()).instruction)
+
+    @app.post("/projects/{project_id}/mockup-pages/screens/add")
+    def add_mockup_screen_scoped(project_id: str, request: AddMockupScreenRequest):
+        return call(runtime_for(project_id).add_mockup_screen, request.description, request.link_from_screen_id)
+
+    @app.post("/mockup-pages/screens/add")
+    def add_mockup_screen_legacy(request: AddMockupScreenRequest):
+        return call(runtime_for(DEFAULT_PROJECT_ID).add_mockup_screen, request.description, request.link_from_screen_id)
+
+    @app.post("/projects/{project_id}/mockup-pages/screens/{screen_id}/split")
+    def split_mockup_screen_scoped(project_id: str, screen_id: str, request: SplitMockupScreenRequest):
+        return call(runtime_for(project_id).split_mockup_screen, screen_id, request.extract_description)
+
+    @app.post("/mockup-pages/screens/{screen_id}/split")
+    def split_mockup_screen_legacy(screen_id: str, request: SplitMockupScreenRequest):
+        return call(runtime_for(DEFAULT_PROJECT_ID).split_mockup_screen, screen_id, request.extract_description)
 
     @app.post("/projects/{project_id}/artifacts/{artifact_id}/comments")
     def comment_scoped(project_id: str, artifact_id: str, request: TextRequest):

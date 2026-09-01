@@ -1,4 +1,5 @@
 const state = { status: null, artifacts: [], selected: null, currentMockup: 0, projectId: "default", projects: [] };
+let fullscreenMockupOpen = false;
 const $ = (selector) => document.querySelector(selector);
 // Paths that should NOT be auto-prefixed with the current project scope
 // (they either target the project registry itself, or are UI assets).
@@ -15,7 +16,10 @@ const api = async (path, options = {}) => {
   return response.status === 204 ? null : response.json();
 };
 const titleCase = (value = "") => value.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-const escapeHtml = (value = "") => String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+// escapeHtml, screenName, screenId, buildScreenList now live in
+// screen_tree.js (loaded before this file) -- pulled out into their own
+// DOM-free module so buildScreenList's navigation-tree logic is unit-
+// testable in plain Node. See that file's own header comment.
 let noticeTimeout = null;
 const showNotice = (message, error = false, loading = false) => {
   const notice = $("#notice");
@@ -376,9 +380,6 @@ function renderDiagrams(diagrams) {
   }).join("");
   return `<div class="panel"><h3>Diagrams</h3>${blocks}</div>`;
 }
-// Screens were plain name strings before mockup-pages existed; tolerate both.
-const screenName = (screen) => (typeof screen === "string" ? screen : screen.name);
-const screenId = (screen) => (typeof screen === "string" ? screen : screen.id);
 // Trusted bridge injected into every mockup iframe: any element the model
 // annotates with data-goto="<screen_id>" becomes a real cross-screen jump,
 // posted up to the review workspace as a message. Model-authored JS still
@@ -498,6 +499,17 @@ async function addLocatedComment(artifactId, location, targetLabel) {
   $("#dialog-content").textContent = "";
   $("#version-list").innerHTML = "";
   $("#comment-text").value = "";
+  // This is a scoped, single comment -- not a full-artifact review, so the
+  // three review actions don't apply here: Approve/Request changes act on
+  // the whole mockup-pages artifact's status, and "Retry generation" hits
+  // the FULL /artifacts/mockup-pages/retry (regenerates every screen, the
+  // exact whole-set drift risk the per-screen "🎯 Regenerate this screen"
+  // button exists to avoid) -- not the scoped per-screen retry. Showing
+  // them here previously invited exactly that mix-up. The (empty) content
+  // preview is hidden too, rather than left showing as an empty dark bar.
+  $("#dialog-content").classList.add("hidden");
+  $("#dialog-actions").classList.add("hidden");
+  $("#version-section").classList.add("hidden");
   $("#artifact-dialog").showModal();
   setTimeout(() => $("#comment-text").focus(), 50);
 }
@@ -505,6 +517,54 @@ function setCommentMode(iframe, enabled) {
   iframe?.contentWindow?.postMessage({ type: "mockup-comment-mode", enabled }, "*");
   state.mockupCommentMode = enabled;
   document.querySelector("#mockup-comment-toggle")?.classList.toggle("active", enabled);
+}
+
+// ---- Full-screen mockup viewer -------------------------------------------
+// Takes over the whole viewport with just the mockup's own iframe -- no
+// sidebar, toolbar, or app chrome around it -- so it reads like the real
+// application rather than a preview embedded in a review tool. Reuses the
+// same srcdoc + sandbox the inline preview uses; in-mockup navigation
+// (data-goto) still posts "mockup-goto" up to the shared listener below,
+// which re-renders this overlay's iframe in place so click-through keeps
+// working without leaving full-screen.
+function currentMockupPage() {
+  const screens = state.currentMockupScreens || [];
+  const pages = state.currentMockupPages || [];
+  const active = screens[state.currentMockup];
+  const activeId = active ? screenId(active) : null;
+  const activeName = active ? screenName(active) : "";
+  const page = pages.find((item) => item.screen_id === activeId || item.screen === activeName);
+  return { activeId, activeName, html: pageHtml(page) };
+}
+
+function renderFullscreenMockup() {
+  const overlay = document.querySelector("#mockup-fullscreen");
+  if (!overlay) return;
+  const { activeId, activeName, html } = currentMockupPage();
+  overlay.querySelector(".fullscreen-mock-title").textContent = activeName;
+  overlay.querySelector(".fullscreen-mock-iframe").setAttribute("srcdoc", html);
+  overlay.querySelector(".fullscreen-mock-iframe").dataset.screenId = activeId || "";
+}
+
+function openFullscreenMockup() {
+  if (document.querySelector("#mockup-fullscreen")) { renderFullscreenMockup(); return; }
+  const { activeName, html } = currentMockupPage();
+  const overlay = document.createElement("div");
+  overlay.id = "mockup-fullscreen";
+  overlay.innerHTML = `<div class="fullscreen-mock-bar"><span class="fullscreen-mock-title">${escapeHtml(activeName)}</span><button class="secondary-button" data-close-fullscreen>✕ Exit full screen</button></div><iframe class="fullscreen-mock-iframe" title="${escapeHtml(activeName)} full screen" sandbox="allow-scripts" srcdoc="${escapeHtml(html)}"></iframe>`;
+  document.body.appendChild(overlay);
+  fullscreenMockupOpen = true;
+  overlay.querySelector("[data-close-fullscreen]").addEventListener("click", closeFullscreenMockup);
+  document.addEventListener("keydown", closeFullscreenOnEscape);
+}
+
+function closeFullscreenOnEscape(event) { if (event.key === "Escape") closeFullscreenMockup(); }
+
+function closeFullscreenMockup() {
+  document.querySelector("#mockup-fullscreen")?.remove();
+  document.removeEventListener("keydown", closeFullscreenOnEscape);
+  fullscreenMockupOpen = false;
+  renderMockups(); // pick up any in-overlay navigation once back in the review chrome
 }
 window.addEventListener("message", (event) => {
   if (event.data?.type === "mockup-bridge-error") {
@@ -514,7 +574,11 @@ window.addEventListener("message", (event) => {
   if (event.data?.type === "mockup-goto") {
     const spec = state.currentMockupScreens || [];
     const index = spec.findIndex((screen) => screenId(screen) === event.data.screen_id);
-    if (index >= 0) { state.currentMockup = index; renderMockups(); }
+    if (index >= 0) {
+      state.currentMockup = index;
+      if (fullscreenMockupOpen) renderFullscreenMockup();
+      else renderMockups();
+    }
   } else if (event.data?.type === "mockup-comment-target") {
     const screens = state.currentMockupScreens || [];
     const active = screens[state.currentMockup];
@@ -530,7 +594,7 @@ window.addEventListener("message", (event) => {
     showPinPopover(anchor, null, async (text) => {
       try {
         await api("/artifacts/mockup-pages/comments", { method: "POST", body: JSON.stringify({ text, location: { kind: "element", screen_id: activeId, selector, text_snippet: textSnippet } }) });
-        showNotice("Comment pinned -- retry mockups to have the agent apply it.");
+        showNotice(`Comment pinned to "${active ? screenName(active) : activeId}" -- click "🎯 Regenerate this screen" there to apply it.`);
         loadPinsForScreen(activeId);
         renderScreenComments(activeId);
       } catch (error) { showNotice(error.message, true); }
@@ -538,36 +602,6 @@ window.addEventListener("message", (event) => {
     setCommentMode(document.querySelector(".mock-frame-iframe"), false);
   }
 });
-function buildScreenList(screens, currentIndex, workflowsById) {
-  // Screens organize by either workflow_id (workflow steps) or entity_id
-  // (CRUD screens for a specific entity); a screen carrying both goes
-  // under its workflow. Screens with neither drop into "Other". Older
-  // mockups with plain-string screens render as the flat list.
-  const hasGroups = screens.some((screen) => typeof screen === "object" && (screen?.workflow_id || screen?.entity_id));
-  if (!hasGroups) return screens.map((screen, index) => `<button class="${index === currentIndex ? "active" : ""}" data-screen="${index}">${escapeHtml(screenName(screen))}</button>`).join("");
-  const groups = new Map();
-  const groupKey = (screen) => screen.workflow_id ? `w:${screen.workflow_id}` : (screen.entity_id ? `e:${screen.entity_id}` : "z:other");
-  screens.forEach((screen, index) => {
-    const key = groupKey(screen);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push({ screen, index });
-  });
-  // Stable ordering: landing first, workflows next (in architecture order), entities after, "other" last.
-  const orderedKeys = [...groups.keys()].sort((a, b) => {
-    const rank = (k) => k === "w:__landing__" ? 0 : k.startsWith("w:") ? 1 : k.startsWith("e:") ? 2 : 3;
-    return rank(a) - rank(b) || a.localeCompare(b);
-  });
-  return orderedKeys.map((key) => {
-    const entries = groups.get(key);
-    let heading;
-    if (key === "w:__landing__") heading = "Landing";
-    else if (key.startsWith("w:")) { const id = key.slice(2); heading = workflowsById.get(id)?.name || id; }
-    else if (key.startsWith("e:")) heading = `Entity: ${key.slice(2)}`;
-    else heading = "Other";
-    const buttons = entries.map(({ screen, index }) => `<button class="${index === currentIndex ? "active" : ""}" data-screen="${index}">${escapeHtml(screenName(screen))}</button>`).join("");
-    return `<div class="screen-group"><p class="screen-group-label">${escapeHtml(heading)}</p>${buttons}</div>`;
-  }).join("");
-}
 async function renderMockups() {
   const target = $("#mockup-model"); const artifact = state.artifacts.find((item) => item.logical_id === "mockup-spec");
   if (!artifact) return empty(target, "Approve the architecture to generate the mockup specification.");
@@ -575,10 +609,7 @@ async function renderMockups() {
   state.currentMockupScreens = screens;
   const pagesArtifact = state.artifacts.find((item) => item.logical_id === "mockup-pages");
   let pages = []; if (pagesArtifact) pages = (await api(`/artifacts/mockup-pages`)).content || [];
-  // architecture-model.workflows may not exist for older projects -- fall back to empty.
-  const workflowsById = new Map();
-  const archArtifact = state.artifacts.find((item) => item.logical_id === "architecture-model");
-  if (archArtifact) { const arch = (await api(`/artifacts/architecture-model`)).content; for (const w of arch?.workflows || []) workflowsById.set(w.id, w); }
+  state.currentMockupPages = pages;
   state.currentMockup = Math.min(state.currentMockup, Math.max(screens.length - 1, 0));
   const active = screens[state.currentMockup]; const activeName = active ? screenName(active) : "Screen preview"; const activeId = active ? screenId(active) : null;
   const page = pages.find((item) => item.screen_id === activeId || item.screen === activeName);
@@ -587,13 +618,14 @@ async function renderMockups() {
   // sandbox="allow-scripts" (deliberately NOT allow-same-origin): model-authored
   // JS runs for local interactivity, but stays fully isolated from this app.
   const toolbar = html
-    ? `<div class="mock-toolbar"><span>${escapeHtml(activeName)}</span><div class="toolbar-buttons"><button class="secondary-button" data-comment-screen>💬 Comment on screen</button><button class="secondary-button" id="mockup-comment-toggle" data-comment-element>📍 Comment on element</button><button class="secondary-button" data-retry-screen title="Regenerate only this screen -- every other screen stays exactly as-is">🎯 Regenerate this screen</button></div></div>`
+    ? `<div class="mock-toolbar"><span>${escapeHtml(activeName)}</span><div class="toolbar-buttons"><button class="secondary-button" data-fullscreen-screen title="Open this screen filling the whole page, like the real application">⛶ Full screen</button><button class="secondary-button" data-comment-screen>💬 Comment on screen</button><button class="secondary-button" id="mockup-comment-toggle" data-comment-element>📍 Comment on element</button><button class="secondary-button" data-retry-screen title="Regenerate only this screen -- every other screen stays exactly as-is">🎯 Regenerate this screen</button><button class="secondary-button" data-add-linked-screen title="Add a brand-new screen this one navigates to (e.g. a Create button that should open its own screen, not a modal) -- every other screen stays exactly as-is">➕ Add linked screen</button><button class="secondary-button" data-split-screen title="Move part of this screen (e.g. a hardcoded record's detail) out into its own new linked screen, leaving a genuine list/summary here -- every other screen stays exactly as-is">🔀 Split this screen</button></div></div>`
     : "";
   const frame = html
     ? `<div class="mock-frame-wrap"><iframe class="mock-frame-iframe" title="${escapeHtml(activeName)} mockup" sandbox="allow-scripts" srcdoc="${escapeHtml(html)}"></iframe><div class="mock-pin-layer"></div></div>`
     : `<div class="mock-frame"><header><div><p class="eyebrow">INTERACTIVE MOCKUP</p><h3>${escapeHtml(activeName)}</h3>${active?.purpose ? `<p class="muted-copy">${escapeHtml(active.purpose)}</p>` : ""}</div><span class="status-pill">Synthetic data</span></header><div class="mock-content"><div class="mock-block"><strong>Workflow status</strong><p class="muted-copy">Awaiting review</p></div><div class="mock-block"><strong>Linked artifacts</strong><p class="muted-copy">System model · Architecture</p></div><div class="mock-block"><strong>Actions</strong><p class="muted-copy">Approve · Request changes</p></div></div></div>`;
-  target.innerHTML = `<div class="screen-list">${buildScreenList(screens, state.currentMockup, workflowsById)}</div><div class="mock-column">${toolbar}<div id="mock-comments" class="mock-comments"></div>${frame}</div>`;
+  target.innerHTML = `<div class="screen-list">${buildScreenList(screens, state.currentMockup, pages)}</div><div class="mock-column">${toolbar}<div id="mock-comments" class="mock-comments"></div>${frame}</div>`;
   target.querySelectorAll("[data-screen]").forEach((button) => button.addEventListener("click", () => { state.currentMockup = Number(button.dataset.screen); renderMockups(); }));
+  target.querySelector("[data-fullscreen-screen]")?.addEventListener("click", openFullscreenMockup);
   target.querySelector("[data-comment-screen]")?.addEventListener("click", () => {
     addLocatedComment("mockup-pages", { kind: "screen", screen_id: activeId }, `Comment on the "${activeName}" screen:`);
   });
@@ -609,7 +641,6 @@ async function renderMockups() {
     // afterward threw a silent, uncaught TypeError here (nothing ever
     // reached the try block, no spinner, no notice, no retry request).
     const button = event.currentTarget;
-    if (!(await appConfirm(`Only the "${activeName}" screen will be regenerated -- every other screen stays exactly as it is now. Any comments pinned to this screen are applied.`, { title: "Regenerate this screen", confirmLabel: "Regenerate" }))) return;
     const originalHtml = button.innerHTML;
     button.disabled = true;
     button.innerHTML = `<span class="btn-spinner"></span> Regenerating...`;
@@ -617,6 +648,41 @@ async function renderMockups() {
     try {
       await api(`/mockup-pages/screens/${encodeURIComponent(activeId)}/retry`, { method: "POST", body: JSON.stringify({}) });
       showNotice(`"${activeName}" regenerated.`);
+      await renderMockups();
+    } catch (error) { showNotice(error.message, true); button.innerHTML = originalHtml; button.disabled = false; }
+  });
+  target.querySelector("[data-add-linked-screen]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget; // see note above on retry-screen's identical bug
+    const description = await appPrompt(
+      `Describe the new screen "${activeName}" should navigate to (what it's for, how it's reached -- e.g. "Create Audit Plan form, opened from the Create button").`,
+      { title: "Add linked screen", placeholder: "e.g. Create Audit Plan form", confirmLabel: "Add screen" },
+    );
+    if (!description) return;
+    button.disabled = true;
+    const originalHtml = button.innerHTML;
+    button.innerHTML = `<span class="btn-spinner"></span> Adding screen...`;
+    showNotice(`Adding a new screen linked from "${activeName}"...`, false, true);
+    try {
+      await api(`/mockup-pages/screens/add`, { method: "POST", body: JSON.stringify({ description, link_from_screen_id: activeId }) });
+      showNotice(`New screen added.`);
+      await renderMockups();
+    } catch (error) { showNotice(error.message, true); button.innerHTML = originalHtml; button.disabled = false; }
+  });
+  target.querySelector("[data-split-screen]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget; // see note above on retry-screen's identical bug
+    const description = await appPrompt(
+      `What should move out of "${activeName}" into its own new screen? (e.g. "the projects table -- this screen should become a genuine list of plan years instead").`,
+      { title: "Split this screen", placeholder: "e.g. the projects table for one plan year", confirmLabel: "Split screen" },
+    );
+    if (!description) return;
+    if (!(await appConfirm(`"${activeName}" will be rewritten to remove that part and link out to a new screen instead. Every other screen stays exactly as-is.`, { title: "Split this screen", confirmLabel: "Split" }))) return;
+    button.disabled = true;
+    const originalHtml = button.innerHTML;
+    button.innerHTML = `<span class="btn-spinner"></span> Splitting screen...`;
+    showNotice(`Splitting "${activeName}"...`, false, true);
+    try {
+      await api(`/mockup-pages/screens/${encodeURIComponent(activeId)}/split`, { method: "POST", body: JSON.stringify({ extract_description: description }) });
+      showNotice(`"${activeName}" split into two screens.`);
       await renderMockups();
     } catch (error) { showNotice(error.message, true); button.innerHTML = originalHtml; button.disabled = false; }
   });
@@ -711,6 +777,10 @@ function showPinPopover(anchorEl, existingText, onSave) {
     closePinPopover();
   });
 }
+// Kept in sync with DocumentReader._SUPPORTED (documents.py) -- the file
+// picker's own filter, not a substitute for the server-side check that
+// actually enforces this (a user can still pick "All files" and try).
+const REFERENCE_FILE_ACCEPT = ".docx,.md,.markdown,.txt,.rst,.pdf,.xlsx,.xlsm,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12,text/plain,text/markdown";
 async function renderReferencesStrip(stage) {
   const strip = document.querySelector(`[data-references-strip="${stage}"]`);
   if (!strip) return;
@@ -732,8 +802,8 @@ async function renderReferencesStrip(stage) {
           <button class="primary-button" data-reference-edit-save>Save</button>
         </div>
       </div>
-    </div>`).join("") || `<p class="muted-copy" style="margin:0;">No supporting documents yet. Add Word, PDF, Markdown, plain-text, or RST files here to give the ${stage} agent more context.</p>`;
-  strip.innerHTML = `<h4>Supporting documents (${stage})</h4>${rows}<div class="attachment-uploader"><input type="file" data-reference-input accept=".docx,.md,.markdown,.txt,.rst,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button class="secondary-button" data-reference-upload>Attach</button></div>`;
+    </div>`).join("") || `<p class="muted-copy" style="margin:0;">No supporting documents yet. Add Word, Excel, PDF, Markdown, plain-text, or RST files here to give the ${stage} agent more context.</p>`;
+  strip.innerHTML = `<h4>Supporting documents (${stage})</h4>${rows}<div class="attachment-uploader"><input type="file" data-reference-input accept="${REFERENCE_FILE_ACCEPT}" /><button class="secondary-button" data-reference-upload>Attach</button></div>`;
   strip.querySelector("[data-reference-upload]")?.addEventListener("click", async () => {
     const input = strip.querySelector("[data-reference-input]");
     const button = strip.querySelector("[data-reference-upload]");
@@ -789,7 +859,21 @@ async function refresh() {
   try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-name").textContent = state.status.project_id || "Design Pipeline"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderHistory(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
 }
 async function openArtifact(id) {
-  try { const artifact = await api(`/artifacts/${id}`); state.selected = artifact; $("#dialog-title").textContent = titleCase(id); $("#dialog-type").textContent = titleCase(artifact.metadata.type); $("#dialog-meta").innerHTML = `<span>v${artifact.metadata.version}</span><span class="status-pill ${artifact.metadata.status}">${titleCase(artifact.metadata.status)}</span><span>${artifact.metadata.requirements.join(", ") || "No requirement IDs"}</span>`; $("#dialog-content").textContent = JSON.stringify(artifact.content, null, 2); const versions = await api(`/artifacts/${id}/versions`); $("#version-list").innerHTML = versions.map((version) => `<span class="version">v${version.version} · ${titleCase(version.status)}</span>`).join(""); $("#artifact-dialog").showModal(); } catch (error) { showNotice(error.message, true); }
+  try {
+    const artifact = await api(`/artifacts/${id}`); state.selected = artifact;
+    $("#dialog-title").textContent = titleCase(id); $("#dialog-type").textContent = titleCase(artifact.metadata.type);
+    $("#dialog-meta").innerHTML = `<span>v${artifact.metadata.version}</span><span class="status-pill ${artifact.metadata.status}">${titleCase(artifact.metadata.status)}</span><span>${artifact.metadata.requirements.join(", ") || "No requirement IDs"}</span>`;
+    $("#dialog-content").textContent = JSON.stringify(artifact.content, null, 2);
+    const versions = await api(`/artifacts/${id}/versions`);
+    $("#version-list").innerHTML = versions.map((version) => `<span class="version">v${version.version} · ${titleCase(version.status)}</span>`).join("");
+    // Undo whatever addLocatedComment (the scoped mockup screen/element
+    // comment flow) hid on this same dialog last time it was open --
+    // this is the full-artifact-review path, where all three make sense.
+    $("#dialog-content").classList.remove("hidden");
+    $("#dialog-actions").classList.remove("hidden");
+    $("#version-section").classList.remove("hidden");
+    $("#artifact-dialog").showModal();
+  } catch (error) { showNotice(error.message, true); }
 }
 async function action(path, body = {}, loadingNotice = null) {
   if (loadingNotice) showNotice(loadingNotice, false, true);
@@ -936,9 +1020,14 @@ document.querySelectorAll("[data-stage-retry]").forEach((button) => button.addEv
 }));
 async function documentPayload(file) {
   const name = file.name.toLowerCase();
-  if (name.endsWith(".docx") || name.endsWith(".pdf")) {
+  const isBinaryFormat = [".docx", ".pdf", ".xlsx", ".xlsm"].some((ext) => name.endsWith(ext));
+  if (isBinaryFormat) {
+    // Binary formats must go through content_base64, not .text() below --
+    // reading a zip-based binary file (docx/xlsx/xlsm are all zips; pdf
+    // isn't but is equally not UTF-8 text) as text mangles its bytes
+    // before it even leaves the browser.
     if (file.size > 10 * 1024 * 1024) {
-      const typeLabel = name.endsWith(".docx") ? "Word documents" : "PDF documents";
+      const typeLabel = name.endsWith(".docx") ? "Word documents" : name.endsWith(".pdf") ? "PDF documents" : "Excel documents";
       throw new Error(`${typeLabel} must be 10 MB or smaller.`);
     }
     const dataUrl = await new Promise((resolve, reject) => {
@@ -1027,7 +1116,17 @@ $("#comment-form").addEventListener("submit", async (event) => {
     await action(`/artifacts/${artifactId}/comments`, { text, location });
     $("#comment-text").value = "";
     state.pendingCommentTarget = null;
-    showNotice("Comment saved -- retry the artifact to have the agent apply it.");
+    if (location.screen_id) {
+      // Point at the exact button that applies THIS comment -- the
+      // generic "retry the artifact" wording left it ambiguous whether
+      // that meant this one screen or the full "Regenerate mockups" (which
+      // also works, but re-sends every screen through the model at once).
+      const screen = (state.currentMockupScreens || []).find((s) => screenId(s) === location.screen_id);
+      const name = screen ? screenName(screen) : location.screen_id;
+      showNotice(`Comment pinned to "${name}" -- click "🎯 Regenerate this screen" there to apply it.`);
+    } else {
+      showNotice("Comment saved -- retry the artifact to have the agent apply it.");
+    }
   } catch (error) { showNotice(error.message, true); }
 });
 // Boot: resolve current project + tab from the URL hash, populate the

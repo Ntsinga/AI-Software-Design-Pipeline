@@ -200,6 +200,200 @@ def test_retry_screen_resolves_its_own_comments(runtime):
     runtime.retry_screen(target_id)
 
 
+def test_retry_screen_recovers_a_patch_nested_under_an_unrelated_key(runtime):
+    """Confirmed live: even with the top-level `mockup-page-patch` key
+    enforced (via Gemini's responseSchema), a model can still nest the
+    real {screen_id, html} object one level deeper inside it, e.g.
+    {"mockup-page-patch": {"result": {"screen_id": ..., "html": ...}}} --
+    the envelope schema deliberately doesn't constrain what's *inside*
+    that key. retry_screen must recover it instead of rejecting the whole
+    regeneration."""
+    runtime.run()
+    runtime.approve("system-model")
+    runtime.run()
+    runtime.approve("data-model")
+    runtime.run()
+    runtime.approve("architecture-model")
+    runtime.run()
+    target_id = runtime.store.artifacts.get("mockup-pages").content[0]["screen_id"]
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        return ({"mockup-page-patch": {"result": {"screen_id": target_id, "html": "<html>nested</html>"}}}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    saved = runtime.retry_screen(target_id)
+    patched = next(page for page in saved.content if page["screen_id"] == target_id)
+    assert patched["html"] == "<html>nested</html>"
+
+
+def test_retry_screen_raises_with_the_raw_response_when_unrecoverable(runtime):
+    runtime.run()
+    runtime.approve("system-model")
+    runtime.run()
+    runtime.approve("data-model")
+    runtime.run()
+    runtime.approve("architecture-model")
+    runtime.run()
+    target_id = runtime.store.artifacts.get("mockup-pages").content[0]["screen_id"]
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        return ({"mockup-page-patch": {"note": "nothing useful here"}}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="nothing useful here"):
+        runtime.retry_screen(target_id)
+
+
+def test_add_mockup_screen_appends_to_both_spec_and_pages_untouched_otherwise(runtime):
+    runtime.run()
+    runtime.approve("system-model")
+    runtime.run()
+    runtime.approve("data-model")
+    runtime.run()
+    runtime.approve("architecture-model")
+    runtime.run()
+    source_id = runtime.store.artifacts.get("mockup-pages").content[0]["screen_id"]
+    pages_before = runtime.store.artifacts.get("mockup-pages").content
+    screens_before = runtime.store.artifacts.get("mockup-spec").content["screens"]
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        assert outputs == ["mockup-screen-addition"]
+        assert inputs["link_from_screen_id"] == source_id
+        assert inputs["new_screen_requirement"] == "Create Audit Plan form"
+        return ({"mockup-screen-addition": {
+            "screen": {"id": "audit_plan_create", "name": "Create Audit Plan"},
+            "page": {"screen_id": "audit_plan_create", "html": "<html>new screen</html>"},
+            "updated_source_page": {"screen_id": source_id, "html": "<html>source now links out</html>"},
+        }}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    saved = runtime.add_mockup_screen("Create Audit Plan form", link_from_screen_id=source_id)
+
+    # The new screen landed in both mockup-pages and mockup-spec.
+    added_page = next(p for p in saved.content if p["screen_id"] == "audit_plan_create")
+    assert added_page["html"] == "<html>new screen</html>"
+    spec_screens = runtime.store.artifacts.get("mockup-spec").content["screens"]
+    assert any(s["id"] == "audit_plan_create" for s in spec_screens)
+
+    # The one linking screen was updated...
+    source_page = next(p for p in saved.content if p["screen_id"] == source_id)
+    assert source_page["html"] == "<html>source now links out</html>"
+
+    # ...but every other existing screen and spec entry is byte-for-byte untouched.
+    untouched_ids = {p["screen_id"] for p in pages_before} - {source_id}
+    for page_id in untouched_ids:
+        before = next(p for p in pages_before if p["screen_id"] == page_id)
+        after = next(p for p in saved.content if p["screen_id"] == page_id)
+        assert after == before
+    assert len(spec_screens) == len(screens_before) + 1
+    for screen in screens_before:
+        assert screen in spec_screens
+
+
+def test_add_mockup_screen_rejects_a_colliding_screen_id(runtime):
+    runtime.run()
+    runtime.approve("system-model")
+    runtime.run()
+    runtime.approve("data-model")
+    runtime.run()
+    runtime.approve("architecture-model")
+    runtime.run()
+    existing_id = runtime.store.artifacts.get("mockup-pages").content[0]["screen_id"]
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        return ({"mockup-screen-addition": {
+            "screen": {"id": existing_id, "name": "Duplicate"},
+            "page": {"screen_id": existing_id, "html": "<html>dup</html>"},
+        }}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="already exists"):
+        runtime.add_mockup_screen("Some new screen")
+
+
+def test_add_mockup_screen_requires_a_description(runtime):
+    runtime.run()
+    with pytest.raises(ValueError, match="description"):
+        runtime.add_mockup_screen("   ")
+
+
+def test_split_mockup_screen_rewrites_source_and_adds_the_extracted_screen(runtime):
+    """The mirror image of add_mockup_screen: a screen carrying two things
+    (e.g. a plan-year list conflated with one year's projects table) gets
+    split into a genuine list + a new detail screen, with every other
+    screen untouched -- same guarantee as retry_screen/add_mockup_screen."""
+    runtime.run()
+    runtime.approve("system-model")
+    runtime.run()
+    runtime.approve("data-model")
+    runtime.run()
+    runtime.approve("architecture-model")
+    runtime.run()
+    source_id = runtime.store.artifacts.get("mockup-pages").content[0]["screen_id"]
+    pages_before = runtime.store.artifacts.get("mockup-pages").content
+    screens_before = runtime.store.artifacts.get("mockup-spec").content["screens"]
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        assert outputs == ["mockup-screen-addition"]
+        assert inputs["link_from_screen_id"] == source_id
+        assert "the projects table" in inputs["new_screen_requirement"]
+        return ({"mockup-screen-addition": {
+            "screen": {"id": "plan_detail", "name": "Plan Detail"},
+            "page": {"screen_id": "plan_detail", "html": "<html>extracted projects table</html>"},
+            "updated_source_page": {"screen_id": source_id, "html": "<html>now a genuine list</html>"},
+        }}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    saved = runtime.split_mockup_screen(source_id, "the projects table")
+
+    rewritten_source = next(p for p in saved.content if p["screen_id"] == source_id)
+    assert rewritten_source["html"] == "<html>now a genuine list</html>"
+    new_page = next(p for p in saved.content if p["screen_id"] == "plan_detail")
+    assert new_page["html"] == "<html>extracted projects table</html>"
+
+    spec_screens = runtime.store.artifacts.get("mockup-spec").content["screens"]
+    assert any(s["id"] == "plan_detail" for s in spec_screens)
+    assert len(spec_screens) == len(screens_before) + 1
+
+    untouched_ids = {p["screen_id"] for p in pages_before} - {source_id}
+    for page_id in untouched_ids:
+        before = next(p for p in pages_before if p["screen_id"] == page_id)
+        after = next(p for p in saved.content if p["screen_id"] == page_id)
+        assert after == before
+
+
+def test_split_mockup_screen_requires_updated_source_page(runtime):
+    """A split without a rewritten source screen isn't a split -- it's
+    add_mockup_screen with extra steps, and would leave the original
+    screen carrying both things it was supposed to be split out of."""
+    runtime.run()
+    runtime.approve("system-model")
+    runtime.run()
+    runtime.approve("data-model")
+    runtime.run()
+    runtime.approve("architecture-model")
+    runtime.run()
+    source_id = runtime.store.artifacts.get("mockup-pages").content[0]["screen_id"]
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        return ({"mockup-screen-addition": {
+            "screen": {"id": "plan_detail", "name": "Plan Detail"},
+            "page": {"screen_id": "plan_detail", "html": "<html>extracted</html>"},
+        }}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="updated_source_page"):
+        runtime.split_mockup_screen(source_id, "the projects table")
+
+
+def test_split_mockup_screen_requires_screen_id_and_description(runtime):
+    runtime.run()
+    with pytest.raises(ValueError, match="screen_id"):
+        runtime.split_mockup_screen("   ", "the table")
+    with pytest.raises(ValueError, match="description"):
+        runtime.split_mockup_screen("some_screen", "   ")
+
+
 def test_retry_loads_comments_from_all_co_generated_siblings(runtime):
     """A comment on mockup-pages must still reach the agent when the user
     retries mockup-spec (they regenerate together, so both sets of

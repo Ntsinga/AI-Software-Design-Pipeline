@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 import re
+import types
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, Union, get_args, get_origin
 
 import yaml
 
 from pydantic import TypeAdapter
 
 from .documents import DocumentReader
-from .models import AgentDefinition, BusinessModel, Comment, DataModel, Handoff, MockupPage, MockupSpec, SolutionModel, SystemModel
+from .models import AgentDefinition, BusinessModel, Comment, DataModel, Handoff, MockupPage, MockupScreenAddition, MockupSpec, SolutionModel, SystemModel
 from .providers import ModelProvider, ProviderRequest
 from .tools.base import Tool
 
@@ -35,6 +36,11 @@ OUTPUT_SCHEMAS: dict[str, Any] = {
     # the list) so the model returns exactly one screen's HTML instead of
     # rewriting the whole set. Never a declared workflow-step output.
     "mockup-page-patch": MockupPage,
+    # Used only by DesignRuntime.add_mockup_screen -- adds exactly one new
+    # screen (plus an optional patch to the one existing screen that should
+    # now link to it) without touching or resending the rest of the mockup
+    # set. Never a declared workflow-step output.
+    "mockup-screen-addition": MockupScreenAddition,
 }
 
 
@@ -267,7 +273,9 @@ class ProviderBackedAgent:
         }
         system_prompt = (
             "You are a software-design pipeline agent. Return only one valid JSON object. "
-            "Its keys must exactly include every declared output. Do not use Markdown fences."
+            "Its keys must exactly include every declared output, spelled and punctuated exactly as given in "
+            "declared_outputs -- including any hyphens (e.g. the key `mockup-page-patch` is the JSON key "
+            "\"mockup-page-patch\", not \"mockup_page_patch\" or \"mockupPagePatch\"). Do not use Markdown fences."
         )
         if schemas:
             system_prompt += (
@@ -284,7 +292,17 @@ class ProviderBackedAgent:
                 "your own words."
             )
         tool_specs = [tool.spec for tool in self.tools]
-        request = ProviderRequest(system_prompt=system_prompt, user_prompt=json.dumps(requested, default=str), temperature=0.0, tools=tool_specs)
+        # Ask the provider to *enforce* the declared top-level keys via its
+        # native structured-output support, not just describe them in the
+        # prompt -- prompt-only guidance is what let a live model rename,
+        # wrap, or flatten `mockup-page-patch` and still pass everything
+        # else. Only offered when this call has no tools: Gemini's
+        # `responseSchema` and function-calling tools are mutually
+        # exclusive in the same request, and every tool-using agent here
+        # (e.g. architecture-agent's mermaid.render) already has
+        # ProviderBackedAgent._recover_declared_keys as its safety net.
+        response_object_keys = None if tool_specs else {output: self._output_shape(output) for output in outputs}
+        request = ProviderRequest(system_prompt=system_prompt, user_prompt=json.dumps(requested, default=str), temperature=0.0, tools=tool_specs, response_object_keys=response_object_keys)
         response = self.provider.generate(request)
 
         self.last_tool_calls = []
@@ -305,7 +323,7 @@ class ProviderBackedAgent:
                 else:
                     self.last_tool_calls.append({"tool": call.name, "arguments": call.arguments, "result": result})
                 tool_results[call.id] = json.dumps(result, default=str)
-            request = ProviderRequest(system_prompt=system_prompt, user_prompt=request.user_prompt, temperature=0.0, tools=tool_specs, history=response.history, tool_results=tool_results)
+            request = ProviderRequest(system_prompt=system_prompt, user_prompt=request.user_prompt, temperature=0.0, tools=tool_specs, history=response.history, tool_results=tool_results, response_object_keys=response_object_keys)
             response = self.provider.generate(request)
             iterations += 1
 
@@ -318,13 +336,150 @@ class ProviderBackedAgent:
             raise ValueError(f"{self.provider.name} returned invalid JSON for {self.definition.id}: {exc.msg}") from exc
         if not isinstance(values, dict):
             raise ValueError(f"{self.provider.name} returned a non-object JSON result for {self.definition.id}")
+        values = self._recover_declared_keys(values, outputs)
         missing = [output for output in outputs if output not in values]
         if missing:
-            raise ValueError(f"{self.provider.name} did not produce declared output(s): {', '.join(missing)}")
+            # Include what the model actually returned -- otherwise this
+            # error is a dead end: there's no way to tell, from "did not
+            # produce X", whether the model wrapped X under another key,
+            # nested it, or omitted it outright. Truncate defensively;
+            # a full mockup-pages array can be very large.
+            received = json.dumps(values, default=str)
+            if len(received) > 800:
+                received = received[:800] + "...(truncated)"
+            raise ValueError(f"{self.provider.name} did not produce declared output(s): {', '.join(missing)} -- it returned these top-level keys instead: {sorted(values)} (raw: {received})")
         unexpected = sorted(set(values) - set(outputs))
         if unexpected:
             raise ValueError(f"{self.provider.name} returned undeclared output(s): {', '.join(unexpected)}")
         return {output: values[output] for output in outputs}
+
+    _PRIMITIVE_JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
+
+    @classmethod
+    def _field_schema(cls, annotation: Any) -> dict[str, Any] | None:
+        """Recursively build a provider-neutral, lowercase-typed JSON-Schema
+        dict (`{"type": "object", "properties": {...}, "required": [...]}`,
+        `{"type": "array", "items": ...}`, or a bare `{"type": "string"}`
+        etc.) for one field's type annotation -- descending into nested
+        pydantic models, lists, and `Optional[X]`/`X | None` -- or `None`
+        when the type is too complex to safely translate (a union of
+        several real types, a bare `Any`/`dict`, ...), signalling the
+        caller to fall back to an unconstrained object for that spot.
+
+        Never emits `$defs`/`$ref`: everything is inlined in place instead,
+        because Gemini's structured-output schema subset doesn't reliably
+        support them. Going only one level deep used to be enough for
+        mockup-page-patch (screen_id/html, both bare strings) but wasn't
+        for mockup-screen-addition (screen/page/updated_source_page, each
+        itself a nested model) -- confirmed live, Gemini returned an empty
+        `{}` for it the same way it once did for mockup-page-patch, because
+        depth 1 left those nested objects just as unconstrained as no
+        schema at all. This recurses all the way down instead.
+        """
+        if annotation in cls._PRIMITIVE_JSON_TYPES:
+            return {"type": cls._PRIMITIVE_JSON_TYPES[annotation]}
+        origin = get_origin(annotation)
+        if origin is list:
+            args = get_args(annotation)
+            item_schema = cls._field_schema(args[0]) if args else None
+            return {"type": "array", "items": item_schema} if item_schema is not None else None
+        if origin is Union or origin is types.UnionType:
+            # Optional[X] / X | None: translate the one real type, treating
+            # the field as optional at the parent level (handled by the
+            # caller via `field.is_required()`) rather than here. A union
+            # of more than one real type has no safe single translation.
+            real_args = [arg for arg in get_args(annotation) if arg is not type(None)]
+            return cls._field_schema(real_args[0]) if len(real_args) == 1 else None
+        model_fields = getattr(annotation, "model_fields", None)
+        if model_fields:
+            properties: dict[str, Any] = {}
+            required: list[str] = []
+            for name, field in model_fields.items():
+                sub_schema = cls._field_schema(field.annotation)
+                if sub_schema is None:
+                    return None  # one untranslatable field forfeits the whole nested object
+                properties[name] = sub_schema
+                if field.is_required():
+                    required.append(name)
+            return {"type": "object", "properties": properties, "required": required}
+        return None
+
+    @classmethod
+    def _output_shape(cls, output: str) -> dict[str, Any]:
+        """The provider-neutral shape hint for one declared output's
+        native-structured-output envelope -- see
+        `ProviderRequest.response_object_keys` for the full contract."""
+        schema_type = OUTPUT_SCHEMAS.get(output)
+        kind = "object"
+        model = schema_type
+        if get_origin(schema_type) is list:
+            kind, model = "array", get_args(schema_type)[0]
+        return {"kind": kind, "schema": cls._field_schema(model) if model is not None else None}
+
+    @staticmethod
+    def _recover_declared_keys(values: dict[str, Any], outputs: list[str]) -> dict[str, Any]:
+        """Remap keys a model returned under a near-miss of a declared
+        output's name, instead of failing the whole generation over it.
+
+        Hyphenated names like `mockup-page-patch` aren't valid identifiers
+        in most languages, so a model (small/cheap ones especially, e.g.
+        Gemini flash-lite on `retry_screen`) sometimes silently renames one
+        to `mockup_page_patch` or `mockupPagePatch` while otherwise
+        producing exactly the content asked for. Match case/punctuation-
+        insensitively first; if that still leaves a single-output request
+        unmatched and the model returned exactly one key under any name,
+        trust that key was meant for the one declared output -- covers a
+        model inventing an unrelated name entirely (e.g. "patch", "result").
+        """
+        def normalize(key: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", key.lower())
+
+        remapped = dict(values)
+        normalized_lookup = {normalize(key): key for key in remapped}
+        for output in outputs:
+            if output in remapped:
+                continue
+            actual_key = normalized_lookup.get(normalize(output))
+            if actual_key is not None and actual_key not in outputs:
+                remapped[output] = remapped.pop(actual_key)
+                normalized_lookup = {normalize(key): key for key in remapped}
+        # A chattier model sometimes wraps the whole answer under an
+        # explanatory key instead of naming the declared outputs at the top
+        # level at all -- e.g. {"response": {"mockup-page-patch": {...}}} or
+        # {"result": {...}}. Look one level down inside any remaining
+        # dict-valued key for a still-missing output's name (exact or
+        # normalized) and hoist it out; drop the now-empty wrapper key so it
+        # doesn't get flagged as an unexpected output afterward.
+        for wrapper_key in list(remapped):
+            if wrapper_key in outputs or not isinstance(remapped[wrapper_key], dict):
+                continue
+            nested = remapped[wrapper_key]
+            nested_lookup = {normalize(key): key for key in nested}
+            hoisted_any = False
+            for output in outputs:
+                if output in remapped:
+                    continue
+                nested_key = output if output in nested else nested_lookup.get(normalize(output))
+                if nested_key is not None:
+                    remapped[output] = nested[nested_key]
+                    hoisted_any = True
+            if hoisted_any:
+                remapped.pop(wrapper_key, None)
+        if len(outputs) == 1 and outputs[0] not in remapped and remapped:
+            # Last resort for a single-output request (retry_screen's only
+            # caller). Every other recovery above has already had its
+            # chance, so whatever's left in `remapped` must be the answer --
+            # there's nothing else it could be. Two shapes seen live:
+            #  - exactly one leftover key wrapping the real value, e.g.
+            #    {"patch": {"screen_id": ..., "html": ...}} -- unwrap it.
+            #  - the declared output's own schema fields flattened at the
+            #    top level with no wrapper key at all, e.g.
+            #    {"screen_id": ..., "html": ...} instead of
+            #    {"mockup-page-patch": {"screen_id": ..., "html": ...}}
+            #    (confirmed live: Gemini flash-lite did exactly this) --
+            #    the whole remaining dict IS the value.
+            remapped = {outputs[0]: next(iter(remapped.values())) if len(remapped) == 1 else remapped}
+        return remapped
 
     @staticmethod
     def _format_comment(comment: Comment) -> str:
