@@ -70,9 +70,12 @@ class AgentLoader:
 class DeterministicAgent:
     """Fixture-backed agent used until a live provider adapter is configured."""
 
-    def __init__(self, definition: AgentDefinition, project_root: Path):
+    def __init__(self, definition: AgentDefinition, input_dir: Path):
         self.definition = definition
-        self.project_root = project_root
+        # The project-scoped `.design/<project_id>/input` directory -- see
+        # DocumentReader's own note on why this must not be an app/project
+        # root.
+        self.input_dir = input_dir
 
     def run(self, outputs: list[str], inputs: dict[str, Any], comments: list[Comment] | None = None, instruction: str | None = None) -> dict[str, Any]:
         comments = comments or []
@@ -87,7 +90,7 @@ class DeterministicAgent:
     def _requirements(self, outputs: list[str], inputs: dict[str, Any]) -> dict[str, Any]:
         brd = inputs.get("brd")
         if not brd:
-            source = DocumentReader(self.project_root).read_brd()
+            source = DocumentReader(self.input_dir).read_brd()
             brd = source.content if source else (
                 "# Business Requirements Document\n\n"
                 "## BR-001 — Manage design projects\n"

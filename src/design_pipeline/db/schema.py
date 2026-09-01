@@ -112,3 +112,36 @@ tasks = Table(
     Column("status", String, nullable=False),
     Column("attempts", Integer, nullable=False),
 )
+
+# The agent/workflow YAML and the staged (uploaded-but-not-yet-ingested) BRD
+# used to live only on local disk, even in Postgres mode -- fine on a
+# persistent disk, but silently wiped on every redeploy/restart on a host
+# with an ephemeral filesystem (Render), while `project_state` above kept
+# insisting the project was still initialized. `project_config` is the
+# durable source of truth for that content now; the on-disk files under
+# `ProjectPaths` become a materialized cache of these rows, rewritten
+# whenever missing (see `DesignRuntime._require_initialized`).
+project_config = Table(
+    "project_config",
+    metadata,
+    Column("project_id", String, primary_key=True),
+    Column("agent_files", JSONB, nullable=False),  # {filename: yaml text}
+    Column("workflow_file", Text, nullable=False),  # design-pipeline.yaml text
+    Column("staged_brd_filename", String, nullable=True),
+    Column("staged_brd_content", Text, nullable=True),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+# Deployment-wide (not per-project) settings that today live in a single
+# shared `.env` file at the filesystem root -- same ephemeral-disk problem
+# as project_config above, just not scoped to any one project. Currently
+# holds only the active model provider selection; API keys are deliberately
+# never written here -- those stay in real process environment variables
+# only (see provider_config.py).
+app_settings = Table(
+    "app_settings",
+    metadata,
+    Column("key", String, primary_key=True),
+    Column("value", String, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)

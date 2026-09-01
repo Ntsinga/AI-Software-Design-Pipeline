@@ -37,7 +37,7 @@ from .validators import data_model_relationships_reference_known_entities, entit
 
 
 DEFAULT_AGENT_FILES = {
-    "requirements.yaml": "id: requirements-agent\ndescription: Build the BRD and progressively richer business, solution, and system models.\ninputs: [project-inspection, brd]\noutputs: [brd, business-model, solution-model, system-model]\ntools: [project.read, artifact.read, artifact.write]\nconstraints:\n  - Preserve requirement intent.\n  - Produce traceable structured models.\n  - \"SUPPORTING REQUIREMENTS DOCUMENTS (system-references): If system-references is present in inputs, you MUST carefully read it and treat it as the current, authoritative understanding of the domain -- more specific and more recent than the original brd wherever the two disagree. This commonly happens when the BRD captured an early, general understanding and a supporting document captures a later, more detailed breakdown (e.g. from a follow-up meeting with a domain expert). When system-references describes entities, structure, or a hierarchy that differs from what business-model/solution-model/system-model currently contain, REPLACE the outdated entities/structure with what system-references describes -- do not keep old entities alongside the new ones just because they existed before. system-model.entities must reflect the CURRENT understanding, not a superset of every understanding ever provided.\"\n",
+    "requirements.yaml": "id: requirements-agent\ndescription: Build the BRD and progressively richer business, solution, and system models.\ninputs: [project-inspection, brd]\noutputs: [brd, business-model, solution-model, system-model]\ntools: []\nconstraints:\n  - Preserve requirement intent.\n  - Produce traceable structured models.\n  - \"UPLOADED DOCUMENT (project-inspection.staged_document): this is the ONLY way you ever see the user's actual uploaded requirements document -- you have no filesystem or tool access, so nothing outside this JSON field exists for you to read. When it is present, its .text is the extracted document text: treat it as the authoritative source and write the brd output from it, preserving its structure, terminology, and any numbered requirements (e.g. BR-001) it already contains rather than inventing generic placeholder requirements. When it is null (no document uploaded yet), fall back to a small, reasonable default BRD instead of leaving brd empty.\"\n  - \"SUPPORTING REQUIREMENTS DOCUMENTS (system-references): If system-references is present in inputs, you MUST carefully read it and treat it as the current, authoritative understanding of the domain -- more specific and more recent than the original brd wherever the two disagree. This commonly happens when the BRD captured an early, general understanding and a supporting document captures a later, more detailed breakdown (e.g. from a follow-up meeting with a domain expert). When system-references describes entities, structure, or a hierarchy that differs from what business-model/solution-model/system-model currently contain, REPLACE the outdated entities/structure with what system-references describes -- do not keep old entities alongside the new ones just because they existed before. system-model.entities must reflect the CURRENT understanding, not a superset of every understanding ever provided.\"\n",
     "architecture.yaml": """id: architecture-agent
 description: Model the structured entity-relationship data model, analyze an approved system model, enumerate the primary user workflows the system must support, and produce a diagram per workflow plus supporting architecture views.
 inputs: [brd, business-model, solution-model, system-model, data-model, data-model-references, architecture-references]
@@ -158,9 +158,13 @@ class DesignRuntime:
     def root(self) -> Path:
         return self.store.paths.root
 
+    @property
+    def _database_url(self) -> str | None:
+        return getattr(self.store, "database_url", None)
+
     def initialize(self, project_id: str | None = None) -> ProjectState:
         state = self.store.initialize(project_id)
-        self._write_defaults()
+        self._sync_config()
         if not self.store.read_events():
             self.store.append_event("PROJECT_INITIALIZED", details={"project_id": state.project_id})
         return state
@@ -174,25 +178,69 @@ class DesignRuntime:
         if not workflow.exists():
             atomic_write(workflow, DEFAULT_WORKFLOW)
 
+    def _sync_config(self) -> None:
+        """Reconcile the on-disk agent/workflow YAML with Postgres, when in
+        Postgres mode. A file that's actually PRESENT on disk is always
+        treated as current truth and (if it differs) pushed into Postgres --
+        never overwritten from the DB, even if the DB holds different
+        content, because that content could be a local edit not yet synced
+        (an earlier version of this method got that backwards: it always
+        restored from the DB first, which silently clobbered a customization
+        made after the DB row was first seeded, before it ever reached
+        Postgres -- caught by test_project_config_durability.py, not by
+        reading the code). Only a file that's genuinely MISSING (the
+        ephemeral-disk-wipe case this exists for) gets restored from the DB.
+
+        1. Restore only what's missing from disk, using the DB's last-known
+           content, if a `project_config` row exists.
+        2. `_write_defaults()` -- the existing filesystem-only fallback,
+           unchanged. A no-op for anything step 1 just restored; it only
+           fires for a project whose DB row doesn't exist yet, or in plain
+           filesystem mode where there's no DB at all.
+        3. Push whatever's on disk now back into Postgres -- restored,
+           defaulted, or a real customization that was sitting on disk
+           unsynced -- but only when it actually differs from the DB, so
+           this doesn't upsert on every single request once nothing's
+           changed.
+        """
+        database_url = getattr(self.store, "database_url", None)
+        config = self.store.load_config() if database_url else None
+        if config is not None:
+            for name, content in config["agent_files"].items():
+                path = self.store.paths.agents / name
+                if not path.exists():
+                    atomic_write(path, content)
+            workflow_path = self.store.paths.workflows / "design-pipeline.yaml"
+            if not workflow_path.exists():
+                atomic_write(workflow_path, config["workflow_file"])
+            if config.get("staged_brd_content"):
+                brd_path = self.store.paths.input / (config.get("staged_brd_filename") or "BRD.md")
+                if not brd_path.exists():
+                    atomic_write(brd_path, config["staged_brd_content"])
+        self._write_defaults()
+        if database_url:
+            agent_files = {path.name: path.read_text(encoding="utf-8") for path in self.store.paths.agents.glob("*.yaml")}
+            workflow_file = (self.store.paths.workflows / "design-pipeline.yaml").read_text(encoding="utf-8")
+            if config is None or config["agent_files"] != agent_files or config["workflow_file"] != workflow_file:
+                self.store.save_config(agent_files, workflow_file)
+
     def _require_initialized(self) -> None:
         if not self.store.is_initialized():
             raise FileNotFoundError("project is not initialized; run `design init`")
-        # Self-heal the on-disk agent/workflow YAML. In Postgres mode,
-        # `is_initialized()` reflects a `project_state` row in the database
-        # -- durable -- but the agent/workflow config files themselves still
-        # live on local disk (see PostgresProjectStore's docstring). On a
-        # host with an ephemeral filesystem (e.g. Render), those files are
-        # gone after any redeploy or restart while the Postgres row still
-        # says "initialized", so every call downstream of here (workflow(),
+        # Self-heal the on-disk agent/workflow YAML (and, via _sync_config,
+        # the staged BRD). In Postgres mode, `is_initialized()` reflects a
+        # `project_state` row in the database -- durable -- but the
+        # agent/workflow config files themselves used to live only on local
+        # disk (see project_config's docstring in db/schema.py). On a host
+        # with an ephemeral filesystem (e.g. Render), those files are gone
+        # after any redeploy or restart while the Postgres row still says
+        # "initialized", so every call downstream of here (workflow(),
         # restart_generation(), run(), ...) would otherwise crash with
         # FileNotFoundError reading design-pipeline.yaml -- observed live in
-        # production. `_write_defaults()` only writes a file that doesn't
-        # already exist, so this never overwrites a real customization still
-        # present on disk; it only recreates what the ephemeral filesystem
-        # actually lost.
+        # production.
         for directory in (self.store.paths.agents, self.store.paths.workflows, self.store.paths.input):
             directory.mkdir(parents=True, exist_ok=True)
-        self._write_defaults()
+        self._sync_config()
 
     def workflow(self):
         self._require_initialized()
@@ -214,7 +262,7 @@ class DesignRuntime:
             "pending_approvals": state.pending_approvals,
             "artifacts": [item.model_dump(mode="json") for item in self.store.artifacts.list_latest()],
             "tasks": [item.model_dump(mode="json") for item in self.store.list_tasks()],
-            "provider": load_provider_settings(self.root).public_status(),
+            "provider": load_provider_settings(self.root, database_url=self._database_url).public_status(),
         }
 
     def set_provider(self, provider: str) -> dict[str, object]:
@@ -225,8 +273,8 @@ class DesignRuntime:
         configured yet is allowed and just shows up as `configured: false`
         (matches `public_status()`), same as always.
         """
-        update_provider(self.root, provider)
-        return load_provider_settings(self.root).public_status()
+        update_provider(self.root, provider, database_url=self._database_url)
+        return load_provider_settings(self.root, database_url=self._database_url).public_status()
 
     def _design_reference_parent_version(self) -> int | None:
         try:
@@ -281,7 +329,7 @@ class DesignRuntime:
         to research.
         """
         self._require_initialized()
-        settings = load_provider_settings(self.root)
+        settings = load_provider_settings(self.root, database_url=self._database_url)
         if settings.provider == "stub":
             raise ValueError("researching a design reference needs a live provider; set DESIGN_PIPELINE_PROVIDER to openai, anthropic, or gemini in .env")
         provider = create_model_provider(settings)
@@ -308,21 +356,34 @@ class DesignRuntime:
 
     def ingest_brd(self, source: Path | str):
         self._require_initialized()
-        document = DocumentReader(self.root).ingest_brd(Path(source))
+        document = DocumentReader(self.store.paths.input).ingest_brd(Path(source))
+        self._persist_staged_brd(document)
         self.store.append_event("BRD_INGESTED", details={"filename": document.filename, "path": document.path})
         return document
 
     def ingest_brd_text(self, content: str, filename: str = "BRD.md"):
         self._require_initialized()
-        document = DocumentReader(self.root).ingest_text(content, filename)
+        document = DocumentReader(self.store.paths.input).ingest_text(content, filename)
+        self._persist_staged_brd(document)
         self.store.append_event("BRD_INGESTED", details={"filename": document.filename, "path": document.path})
         return document
 
     def ingest_brd_bytes(self, content: bytes, filename: str):
         self._require_initialized()
-        document = DocumentReader(self.root).ingest_bytes(content, filename)
+        document = DocumentReader(self.store.paths.input).ingest_bytes(content, filename)
+        self._persist_staged_brd(document)
         self.store.append_event("BRD_INGESTED", details={"filename": document.filename, "path": document.path})
         return document
+
+    def _persist_staged_brd(self, document) -> None:
+        # DocumentReader already wrote the extracted text to local disk
+        # (`.design/<project>/input/BRD.md`) -- mirror it into Postgres too,
+        # in DB mode, so an upload survives a redeploy/restart that happens
+        # before the user clicks Generate (the file is read fresh on every
+        # requirements-step run, not just once, so this matters beyond the
+        # very first generation too).
+        if hasattr(self.store, "save_staged_brd"):
+            self.store.save_staged_brd(document.filename, document.content)
 
     # ---- Multi-document supplementary references per stage --------------
     # A `{stage}-references` artifact holds a list of extracted reference
@@ -439,6 +500,24 @@ class DesignRuntime:
             visit(step_id)
         return ordered
 
+    def _project_inspection_content(self, project_id: str) -> dict[str, Any]:
+        # The "requirements" step's ONLY input is this artifact -- a live
+        # provider has no filesystem access and no working tool to fetch a
+        # file itself (the agent YAML's declared `project.read` tool was
+        # never actually implemented; see tools/registry.py), so if the
+        # extracted BRD text isn't embedded directly here, the model
+        # receives nothing but these bare paths and (reasonably) returns
+        # empty output for brd/business-model/solution-model/system-model.
+        # This was a real production incident: every one of those came back
+        # as `{}` for a freshly uploaded document.
+        document = DocumentReader(self.store.paths.input).read_brd()
+        return {
+            "project_id": project_id,
+            "root": str(self.root),
+            "design_directory": str(self.store.paths.design),
+            "staged_document": {"filename": document.filename, "text": document.content} if document else None,
+        }
+
     def _load_inputs(self, names: list[str]) -> tuple[dict[str, Any], list[ArtifactReference], list[str]]:
         values: dict[str, Any] = {}
         references: list[ArtifactReference] = []
@@ -490,9 +569,9 @@ class DesignRuntime:
 
     def _execute_agent(self, agent_id: str, outputs: list[str], inputs: dict[str, Any], comments: list[Comment] | None = None, instruction: str | None = None) -> tuple[dict[str, Any], dict[str, str]]:
         definition = AgentLoader(self.store.paths.agents).load(agent_id)
-        settings = load_provider_settings(self.root)
+        settings = load_provider_settings(self.root, database_url=self._database_url)
         if settings.provider == "stub":
-            values = DeterministicAgent(definition, self.root).run(outputs, inputs, comments, instruction)
+            values = DeterministicAgent(definition, self.store.paths.input).run(outputs, inputs, comments, instruction)
             return values, {"agent": agent_id, "provider": "stub", "model": "deterministic-fixture"}
         provider = create_model_provider(settings)
         tools = resolve_tools(definition.tools, mermaid_api_key=load_mermaid_api_key(self.root))
@@ -585,7 +664,7 @@ class DesignRuntime:
                 inputs, references, requirements = self._load_inputs(step.inputs)
                 task = self._start_task(step, references)
                 if step.type == "deterministic":
-                    values = {"project-inspection": {"project_id": state.project_id, "root": str(self.root), "design_directory": str(self.store.paths.design)}}
+                    values = {"project-inspection": self._project_inspection_content(state.project_id)}
                     generated_by = {"agent": "runtime", "provider": "runtime", "model": "deterministic"}
                 else:
                     if not step.agent:
@@ -622,7 +701,7 @@ class DesignRuntime:
         a new version linked to the version it replaced.
         """
         self._require_initialized()
-        settings = load_provider_settings(self.root)
+        settings = load_provider_settings(self.root, database_url=self._database_url)
         if settings.provider == "stub":
             raise ValueError("live generation is not selected; set DESIGN_PIPELINE_PROVIDER to openai, anthropic, or gemini in .env, then restart the server")
         state = self.store.load_state()
@@ -677,7 +756,7 @@ class DesignRuntime:
             inputs, references, requirements = self._load_inputs(step.inputs)
             task = self._start_task(step, references)
             if step.type == "deterministic":
-                values = {"project-inspection": {"project_id": state.project_id, "root": str(self.root), "design_directory": str(self.store.paths.design)}}
+                values = {"project-inspection": self._project_inspection_content(state.project_id)}
                 generated_by = {"agent": "runtime", "provider": "runtime", "model": "deterministic"}
             else:
                 if not step.agent:

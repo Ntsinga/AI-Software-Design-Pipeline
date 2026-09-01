@@ -30,6 +30,42 @@ def test_workflow_pauses_and_resumes_at_approval_gates(runtime):
     assert pages and all("html" in page and "screen_id" in page for page in pages)
 
 
+def test_requirements_step_receives_the_uploaded_document_text(runtime):
+    """Reproduces a real production incident: a live provider has no
+    filesystem or tool access (the agent YAML's declared `project.read`
+    tool was never actually implemented), so unless the extracted BRD text
+    is embedded directly into project-inspection's content, the model
+    receives nothing but bare file paths and returns empty output for
+    brd/business-model/solution-model/system-model. This asserts the
+    "requirements" step's own `inputs` -- exactly what a live provider's
+    prompt is built from -- actually carries the uploaded text."""
+    runtime.ingest_brd_text("# BR-500\nAuditors must approve every finding before closure.", "AuditModule.md")
+
+    seen_inputs = {}
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        seen_inputs.update(inputs)
+        return ({o: {} for o in outputs}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    runtime.run()
+
+    # read_brd() always reports the fixed on-disk filename ("BRD.md") it
+    # re-reads from, not the original upload's name -- that's pre-existing,
+    # unrelated behavior; only the text is under test here.
+    staged = seen_inputs["project-inspection"]["staged_document"]
+    assert staged["filename"] == "BRD.md"
+    assert "Auditors must approve every finding before closure" in staged["text"]
+
+
+def test_uploaded_brd_lands_under_this_projects_own_input_directory(runtime):
+    """A prior bug wrote every project's upload to the same shared,
+    non-project-scoped path -- the file this test checks for is exactly
+    where DocumentReader/DesignRuntime must agree to read it back from."""
+    runtime.ingest_brd_text("# BR-1\nContent.", "BRD.md")
+    assert (runtime.store.paths.input / "BRD.md").read_text(encoding="utf-8") == "# BR-1\nContent."
+
+
 def test_design_reference_is_an_optional_mockups_input(runtime):
     """Absent by default -- the mockups step must not require one."""
     runtime.run()

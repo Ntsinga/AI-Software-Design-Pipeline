@@ -33,19 +33,16 @@ class DocumentReader:
         ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
     }
 
-    def __init__(self, project_root: Path):
-        self.project_root = project_root
+    def __init__(self, input_dir: Path):
+        # The project-scoped `.design/<project_id>/input` directory (see
+        # `storage.ProjectPaths.input`) -- callers must pass that, not an
+        # app/project root, or an uploaded BRD silently lands in the wrong
+        # project's storage (or a location nothing ever reads back from).
+        self.input_dir = input_dir
 
     def read_brd(self) -> DocumentSource | None:
-        candidates = [
-            self.project_root / ".design" / "input" / "BRD.md",
-            self.project_root / "BRD.md",
-            self.project_root / "requirements.md",
-        ]
-        for path in candidates:
-            if path.exists():
-                return self.read(path)
-        return None
+        path = self.input_dir / "BRD.md"
+        return self.read(path) if path.exists() else None
 
     def read(self, path: Path) -> DocumentSource:
         return self.read_bytes(path.read_bytes(), path.name, path=str(path))
@@ -172,13 +169,13 @@ class DocumentReader:
 
     def ingest_brd(self, source: Path) -> DocumentSource:
         document = self.read(source)
-        destination = self.project_root / ".design" / "input" / "BRD.md"
+        destination = self.input_dir / "BRD.md"
         atomic_write(destination, document.content)
         return DocumentSource(filename="BRD.md", path=str(destination), media_type="text/markdown", content=document.content)
 
     def ingest_bytes(self, data: bytes, filename: str) -> DocumentSource:
         document = self.read_bytes(data, filename)
-        destination = self.project_root / ".design" / "input" / "BRD.md"
+        destination = self.input_dir / "BRD.md"
         atomic_write(destination, document.content)
         return DocumentSource(filename=filename, path=str(destination), media_type="text/markdown", content=document.content)
 
@@ -192,6 +189,6 @@ class DocumentReader:
             raise ValueError(f"unsupported document type {suffix or '<none>'}; supported types: {supported}")
         if not content.strip():
             raise ValueError("document is empty")
-        destination = self.project_root / ".design" / "input" / "BRD.md"
+        destination = self.input_dir / "BRD.md"
         atomic_write(destination, content)
         return DocumentSource(filename=filename, path=str(destination), media_type=self._SUPPORTED[suffix], content=content)

@@ -102,7 +102,7 @@ def test_ingest_brd_extracts_supported_text_and_persists(runtime, tmp_path: Path
     source.write_text("# BR-017\nHigh-risk reports require Director approval.", encoding="utf-8")
     document = runtime.ingest_brd(source)
     assert document.filename == "BRD.md"
-    assert (tmp_path / ".design" / "input" / "BRD.md").read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+    assert (tmp_path / ".design" / "default" / "input" / "BRD.md").read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
 
 
 def test_reader_rejects_unsupported_documents(tmp_path: Path):
@@ -135,7 +135,7 @@ def test_reader_extracts_word_document_and_ingests_as_brd(runtime, tmp_path: Pat
 
     ingested = runtime.ingest_brd_bytes(source.read_bytes(), source.name)
     assert ingested.filename == "requirements.docx"
-    assert "Approvals must be auditable" in (tmp_path / ".design" / "input" / "BRD.md").read_text(encoding="utf-8")
+    assert "Approvals must be auditable" in (tmp_path / ".design" / "default" / "input" / "BRD.md").read_text(encoding="utf-8")
 
 
 def test_reader_extracts_pdf_document_and_ingests_as_brd(runtime, tmp_path: Path):
@@ -147,7 +147,7 @@ def test_reader_extracts_pdf_document_and_ingests_as_brd(runtime, tmp_path: Path
 
     ingested = runtime.ingest_brd_bytes(source.read_bytes(), source.name)
     assert ingested.filename == "requirements.pdf"
-    assert "Multi-factor authentication is required" in (tmp_path / ".design" / "input" / "BRD.md").read_text(encoding="utf-8")
+    assert "Multi-factor authentication is required" in (tmp_path / ".design" / "default" / "input" / "BRD.md").read_text(encoding="utf-8")
 
 
 def test_reader_rejects_invalid_xlsx_documents(tmp_path: Path):
