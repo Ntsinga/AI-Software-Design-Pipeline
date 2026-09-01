@@ -63,10 +63,24 @@ def _read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def load_provider_settings(root: Path | str, environ: Mapping[str, str] | None = None) -> ProviderSettings:
-    """Load project `.env`, with real environment variables taking precedence."""
+def load_provider_settings(root: Path | str, environ: Mapping[str, str] | None = None, database_url: str | None = None) -> ProviderSettings:
+    """Load project `.env`, with real environment variables taking precedence.
+
+    `database_url`, when given, adds one more fallback layer for just the
+    active provider selection: real env var > the deployment-wide Postgres
+    `app_settings` row > the local `.env` file > "stub". The DB layer exists
+    because `.env` lives on local disk even in Postgres mode -- an operator-
+    set env var always persists (it's part of the platform's own deploy
+    config), but a provider switched via the UI (`update_provider`, which
+    only ever wrote to `.env`) did not survive a redeploy on a host with an
+    ephemeral filesystem (e.g. Render) before this existed.
+    """
     file_values = _read_dotenv(Path(root) / ".env")
     environment = os.environ if environ is None else environ
+    if database_url and "DESIGN_PIPELINE_PROVIDER" not in environment and "DESIGN_PIPELINE_PROVIDER" not in file_values:
+        db_provider = _db_get_provider(database_url)
+        if db_provider:
+            file_values["DESIGN_PIPELINE_PROVIDER"] = db_provider
 
     def value(name: str, default: str = "") -> str:
         return environment.get(name, file_values.get(name, default)).strip()
@@ -91,11 +105,16 @@ def load_provider_settings(root: Path | str, environ: Mapping[str, str] | None =
     return ProviderSettings(provider, model, api_key, max_output_tokens, timeout_seconds, max_tool_iterations)
 
 
-def update_provider(root: Path | str, provider: str) -> None:
+def update_provider(root: Path | str, provider: str, database_url: str | None = None) -> None:
     """Rewrite just the `DESIGN_PIPELINE_PROVIDER=` line in the project's
     `.env`, preserving every other line (comments, keys, ordering). Adds
     the line if `.env` doesn't have one yet. Keys are never touched here --
     only which provider is active.
+
+    Also persists the selection to Postgres when `database_url` is given
+    (see `load_provider_settings`'s docstring) -- `.env` is still written
+    too, both because it's harmless and because it keeps behavior identical
+    for anyone inspecting the file directly.
     """
     provider = provider.strip().lower()
     if provider not in {"stub", "openai", "anthropic", "gemini"}:
@@ -109,6 +128,24 @@ def update_provider(root: Path | str, provider: str) -> None:
     else:
         lines.append(f"DESIGN_PIPELINE_PROVIDER={provider}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if database_url:
+        _db_set_provider(database_url, provider)
+
+
+def _db_get_provider(database_url: str) -> str | None:
+    try:
+        from .db.store import pg_get_app_setting
+    except ImportError:
+        return None  # optional `postgres` extra not installed
+    return pg_get_app_setting(database_url, "DESIGN_PIPELINE_PROVIDER")
+
+
+def _db_set_provider(database_url: str, provider: str) -> None:
+    try:
+        from .db.store import pg_set_app_setting
+    except ImportError:
+        return  # optional `postgres` extra not installed
+    pg_set_app_setting(database_url, "DESIGN_PIPELINE_PROVIDER", provider)
 
 
 def load_database_url(root: Path | str, environ: Mapping[str, str] | None = None) -> str | None:

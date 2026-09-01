@@ -132,7 +132,7 @@ def test_api_accepts_base64_word_upload(tmp_path):
     response = client.post("/documents/brd", json={"filename": "BRD.docx", "content_base64": payload})
     assert response.status_code == 200
     assert response.json()["filename"] == "BRD.docx"
-    assert "BR-099" in (tmp_path / ".design" / "input" / "BRD.md").read_text(encoding="utf-8")
+    assert "BR-099" in (tmp_path / ".design" / "default" / "input" / "BRD.md").read_text(encoding="utf-8")
 
 
 def test_api_accepts_base64_pdf_upload(tmp_path):
@@ -142,4 +142,4 @@ def test_api_accepts_base64_pdf_upload(tmp_path):
     response = client.post("/documents/brd", json={"filename": "BRD.pdf", "content_base64": payload})
     assert response.status_code == 200
     assert response.json()["filename"] == "BRD.pdf"
-    assert "BR-101" in (tmp_path / ".design" / "input" / "BRD.md").read_text(encoding="utf-8")
+    assert "BR-101" in (tmp_path / ".design" / "default" / "input" / "BRD.md").read_text(encoding="utf-8")

@@ -15,6 +15,7 @@ query/insert filters by that id.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
@@ -40,7 +41,7 @@ from ..models import (
 from ..storage import DEFAULT_PROJECT_ID, ArtifactRegistry, ProjectPaths, _safe_project_id
 from .engine import build_engine
 from .migrate import ensure_schema
-from .schema import approvals, artifacts, comments, dependency_graph, execution_events, metadata as db_metadata, project_state, projects, tasks
+from .schema import app_settings, approvals, artifacts, comments, dependency_graph, execution_events, metadata as db_metadata, project_config, project_state, projects, tasks
 
 
 def _metadata_row(project_id: str, metadata: ArtifactMetadata, content: Any) -> dict[str, Any]:
@@ -228,6 +229,10 @@ class PostgresProjectStore:
     def __init__(self, root: Path | str, database_url: str, project_id: str = DEFAULT_PROJECT_ID):
         self.paths = ProjectPaths(root, project_id)
         self._project_id = self.paths.project_id
+        # Exposed (not just `_engine`) so `DesignRuntime` can reach the raw
+        # URL for the deployment-wide `app_settings` helpers below, which
+        # aren't scoped to one project and so don't belong on this class.
+        self.database_url = database_url
         self._engine = build_engine(database_url)
         # Idempotent: safe to call on every construction (e.g. every CLI
         # invocation), including against a brand new, empty database.
@@ -377,6 +382,83 @@ class PostgresProjectStore:
                 select(tasks).where(tasks.c.project_id == self._project_id).order_by(tasks.c.id)
             ).mappings().all()
         return [Task(id=row["id"], objective=row["objective"], step_id=row["step_id"], handoff=row["handoff"], status=row["status"], attempts=row["attempts"]) for row in rows]
+
+    # ---- project_config: durable mirror of the on-disk agent/workflow ----
+    # YAML and the staged BRD (see schema.py's docstring on project_config
+    # for why this exists).
+    def load_config(self) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(project_config).where(project_config.c.project_id == self._project_id)
+            ).mappings().first()
+        return dict(row) if row else None
+
+    def save_config(self, agent_files: dict[str, str], workflow_file: str) -> None:
+        # Upsert that never touches staged_brd_* -- those are written
+        # independently by save_staged_brd, on its own schedule (whenever a
+        # BRD is uploaded), not whenever agent/workflow config is synced.
+        with self._engine.begin() as conn:
+            conn.execute(
+                pg_insert(project_config)
+                .values(project_id=self._project_id, agent_files=agent_files, workflow_file=workflow_file, staged_brd_filename=None, staged_brd_content=None, updated_at=utc_now())
+                .on_conflict_do_update(
+                    index_elements=["project_id"],
+                    set_={"agent_files": agent_files, "workflow_file": workflow_file, "updated_at": utc_now()},
+                )
+            )
+
+    def save_staged_brd(self, filename: str, content: str) -> None:
+        # Relies on a project_config row already existing (agent_files/
+        # workflow_file are NOT NULL) -- true in practice, since every
+        # caller of this reaches it through `_require_initialized()`, which
+        # always seeds the row first.
+        with self._engine.begin() as conn:
+            conn.execute(
+                update(project_config)
+                .where(project_config.c.project_id == self._project_id)
+                .values(staged_brd_filename=filename, staged_brd_content=content, updated_at=utc_now())
+            )
+
+
+@lru_cache(maxsize=8)
+def _cached_engine(database_url: str) -> Engine:
+    # `load_provider_settings`/`update_provider` call the two functions
+    # below on essentially every API request (they're read on every
+    # `status()`) -- a fresh Engine (and its own connection pool) per call
+    # would be wasteful. Cached per URL and reused for the life of the
+    # process; SQLAlchemy Engines are meant to be long-lived and are
+    # threadsafe to share this way.
+    return build_engine(database_url)
+
+
+_app_settings_schema_ready: set[str] = set()
+
+
+def _ready_engine(database_url: str) -> Engine:
+    engine = _cached_engine(database_url)
+    if database_url not in _app_settings_schema_ready:
+        db_metadata.create_all(engine, checkfirst=True)
+        ensure_schema(engine)
+        _app_settings_schema_ready.add(database_url)
+    return engine
+
+
+def pg_get_app_setting(database_url: str, key: str) -> str | None:
+    """Read one deployment-wide setting (see schema.py's `app_settings`)."""
+    engine = _ready_engine(database_url)
+    with engine.connect() as conn:
+        row = conn.execute(select(app_settings.c.value).where(app_settings.c.key == key)).first()
+    return row[0] if row else None
+
+
+def pg_set_app_setting(database_url: str, key: str, value: str) -> None:
+    engine = _ready_engine(database_url)
+    with engine.begin() as conn:
+        conn.execute(
+            pg_insert(app_settings)
+            .values(key=key, value=value, updated_at=utc_now())
+            .on_conflict_do_update(index_elements=["key"], set_={"value": value, "updated_at": utc_now()})
+        )
 
 
 class PostgresProjectRegistry:
