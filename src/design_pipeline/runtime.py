@@ -33,7 +33,7 @@ from .storage import DEFAULT_PROJECT_ID, atomic_write, build_project_registry, b
 from .provider_config import load_mermaid_api_key, load_provider_settings, update_provider
 from .providers import ProviderRequest, create_model_provider
 from .tools.registry import resolve_tools
-from .validators import data_model_relationships_reference_known_entities, entity_crud_coverage, no_raw_ids_rendered_in_html, workflow_id_coverage
+from .validators import data_model_relationships_reference_known_entities, entity_crud_coverage, no_control_characters_in_html, no_raw_ids_rendered_in_html, workflow_id_coverage
 
 
 DEFAULT_AGENT_FILES = {
@@ -63,7 +63,7 @@ constraints:
   - Use synthetic data.
   - Optimize for workflow validation rather than production UI quality.
   - Each mockup-pages entry is one complete, self-contained HTML document (inline <style>, no external assets) for one screen in mockup-spec.screens.
-  - "SUPPORTING UX DOCUMENTS (mockup-references): If mockup-references is present in inputs, you MUST carefully inspect and strictly follow all screen flows, page sequences, layouts, navigation paths, and UI requirements described in those supporting documents. The supporting documents represent the user's explicit UX requirements and take precedence over default assumptions."
+  - "SUPPORTING UX DOCUMENTS (mockup-references): If mockup-references is present in inputs, you MUST carefully inspect and strictly follow all screen flows, page sequences, layouts, navigation paths, and UI requirements described in those supporting documents. The supporting documents represent the user's explicit UX requirements and take precedence over default assumptions. mockup-references may hold several attached documents, each with its own `filename` -- if a comment or instruction names one of them specifically (e.g. \\"per field-mapping.xlsx\\" or \\"see the labels sheet\\"), treat that document as the authoritative source for this change over the others, even if it doesn't restate that document's content inline."
   - "Read architecture-model.workflows and organize screens by workflow: for each workflow, generate its entry_point_screen plus one screen per step in workflow.steps, in order. Every workflow screen must carry workflow_id EQUAL to one of architecture-model.workflows[].id verbatim -- copy the exact id string, do not invent shorter slugs or your own naming. Only an app-launcher-style landing screen uses the reserved workflow_id \\"__landing__\\"."
   - "WORKFLOW COVERAGE IS MANDATORY: every workflow in architecture-model.workflows must appear in mockup-spec.screens. If architecture-model.workflows has 8 entries, mockup-spec must have screens carrying all 8 of those workflow_id values, plus one __landing__ entry. Missing a workflow is a failure -- do not skip workflows to keep the list short."
   - "ENTITY CRUD COVERAGE IS MANDATORY: For every entity in data-model.entities (fall back to system-model.entities only if data-model is absent), generate dedicated CRUD screens: at minimum a list/register screen (browse, filter, search records) and a detail/edit/form screen (view, create, or edit record). Set entity_id to the exact entity name verbatim (e.g. \\"ia_auditable_entity\\"). For dedicated CRUD screens, set workflow_id to \\"\\" so they group cleanly under the Entity section in the review workspace navigation. (If a workflow step also acts as an entity editor, it may carry both workflow_id and entity_id). Missing an entity is a failure -- all entities must be represented."
@@ -75,6 +75,12 @@ constraints:
   - "TERMINOLOGY: for any primary navigation label, tab name, or section heading, use mockup-references' EXACT wording when it names one directly (e.g. if mockup-references says the tabs are \\"Audit Plans\\" and \\"Audit Assignments\\", use those exact two labels -- do not substitute a synonym like \\"Engagements\\" even though it's valid audit terminology in prose elsewhere). Generic domain vocabulary is fine for body copy and descriptions; primary navigation must match the reference doc's own vocabulary exactly."
   - "NESTED/ATTACHED RECORDS: an entity that mockup-references (or data-model's own relationships) describes as an annotation, comment, or note attached to a specific parent record (e.g. review notes/comments raised against a specific workpaper or procedure) belongs INLINE within that parent's own screen -- shown alongside the record it's attached to, with its own add/reply affordance right there -- not as a separate, independent top-level CRUD screen the user has to navigate away to reach. Use judgement based on how the reference document actually describes the interaction, not just the data model's cardinality alone."
   - "The chain-hierarchy exception above still requires the ONE shared editor screen to be ACTUALLY EDITABLE, not a read-only summary: real Add buttons at every level, inline editable fields, and visible affordances for editing/removing an existing item at any level -- matching \\"adding an item at any level never requires navigating to a separate screen\\", which only works if the screen truly lets you add/edit there."
+  - "MASTER-DETAIL HIERARCHIES: if an entity's own screen would need to show, for ONE record of that entity, a full table/list of a DIFFERENT related entity's records (e.g. one annual plan's list of audit projects, one project's list of workpapers), that is TWO screens, not one -- a top-level LIST screen that browses/selects among ALL records of the first entity (e.g. every plan year), and a separate DETAIL screen for exactly one of those records showing its related child records. Do not collapse both into a single screen that jumps straight to one hardcoded record's detail -- that leaves no way to browse or select among the other records, which the entity's own \\"list of X\\" key_elements bullet already promises. Read key_elements literally: if it mixes \\"list of <entity>\\" phrasing with a table/detail of a DIFFERENT entity in the same screen entry, that is exactly this mistake -- split it into the two screens described above, both carrying that entity's entity_id."
+  - "STRUCTURAL PARITY (\\"X has the same structure/capabilities as Y\\"): when a reference document states that one entity carries the same structure, feature set, or capabilities as another already-modeled entity (e.g. \\"an audit assignment carries the same structure and capabilities as an audit project: the three folders, the fieldwork register, issue tracking and the wrap-up documents\\"), this means X gets its OWN parallel set of screens that mirror Y's structure -- own identity fields, own header/breadcrumb showing X's own record (not Y's), own back-navigation that returns to X's own register, not Y's. It does NOT mean routing X's rows to literally open Y's existing screens. Reusing Y's screens for X is a failure mode: it leaves X's detail view showing Y's data and navigating back into Y's list, which is wrong regardless of how similar the two entities' structures are."
+  - "VERBATIM ENUMERATIONS: when a reference document names an exact, finite list of values for a status, category, rating, or option field (e.g. an issue status of Open / Overdue / Closed (verified) / Closed (unverified) / Closed (pending), or a High/Medium/Low rating), reproduce that list exactly -- same count, same wording, same order -- on every screen that field appears, rather than inventing a shorter or reworded set of your own."
+  - "FRESH/EMPTY STATE: for any entity whose reference material describes it as created through a setup or creation flow (e.g. creating a new audit project instantiates its folder structure before any content exists), include at least one screen depicting that entity immediately after creation -- the structural chrome (folders, tabs, sections) all present and reachable, but each section showing its genuine empty state (e.g. \\"No planning documents uploaded yet\\" plus the affordance to add one) rather than only ever showing a fully populated example."
+  - "ICON SAFETY: use only ordinary, single-codepoint Unicode emoji or symbol characters for icons (the same kind used elsewhere in this spec, e.g. a plain folder or document glyph) -- never emit multi-codepoint ZWJ emoji sequences, variation selectors, or any other multi-byte combining sequence, and never emit raw control characters (byte values below 0x20 other than tab/newline) anywhere in generated HTML. These have previously corrupted into stray control bytes during generation and rendered as broken icons."
+  - "CONFIGURATION/VERSIONING SEMANTICS: read requirement language carefully for phrasing that implies configuration or versioning, not a single flat record -- e.g. \\"a customisable feedback form... it should either be a template or versioned doc, so we can create multiple templates and select which is active\\" describes MULTIPLE saved templates plus an explicit active/inactive selection, not a single uploaded file. Model such requirements as a list of versions/templates with a visible active-selection control, matching the described semantics rather than flattening them into a generic single-file upload."
 """,
 }
 
@@ -479,7 +485,7 @@ class DesignRuntime:
         # architecture-model. Adding more validators is just extending this
         # list -- keep them agent-specific to avoid running irrelevant checks.
         if agent_id == "ux-agent":
-            validators = [workflow_id_coverage, entity_crud_coverage, no_raw_ids_rendered_in_html]
+            validators = [workflow_id_coverage, entity_crud_coverage, no_raw_ids_rendered_in_html, no_control_characters_in_html]
         elif agent_id == "architecture-agent":
             # Only inspects values.get("data-model"), so it's a safe no-op
             # on the "architecture" step's own call (outputs=[architecture-model,
@@ -740,12 +746,16 @@ class DesignRuntime:
         # Load comments from every sibling in this step, not just the
         # named target. Users comment on the mockup-pages screen they see,
         # then retry mockup-spec (or vice versa) -- both sets of feedback
-        # must reach the agent since one call regenerates both.
+        # must reach the agent since one call regenerates both. Only OPEN
+        # comments -- once a comment has actually been applied by a
+        # successful retry (below), it's marked resolved so it doesn't
+        # keep getting resent (and re-confusing the model) on every future
+        # retry indefinitely.
         comments: list[Comment] = []
         seen_comment_ids: set[str] = set()
         for output_id in step_outputs:
             for comment in self.store.list_comments(output_id):
-                if comment.id not in seen_comment_ids:
+                if comment.status == "open" and comment.id not in seen_comment_ids:
                     seen_comment_ids.add(comment.id)
                     comments.append(comment)
 
@@ -807,8 +817,20 @@ class DesignRuntime:
                 state.step_states[step.id] = StepStatus.PENDING
                 state.workflow_status = WorkflowStatus.PAUSED
         self.store.save_state(state)
+        self._resolve_comments(comments)
         self.store.append_event("ARTIFACT_RETRIED", artifact_id=artifact_id, details={"version": primary.metadata.version, "parent_version": current.metadata.version, "instruction": instruction, "co_regenerated": regenerated})
         return primary
+
+    def _resolve_comments(self, comments: list[Comment]) -> None:
+        """Mark comments as applied once a retry that used them succeeds,
+        so they stop being resent (and re-confusing the model) on every
+        subsequent retry. Comments stay in history -- resolved, not
+        deleted -- same as every other artifact in this app never being
+        silently thrown away."""
+        for comment in comments:
+            comment.status = "resolved"
+            comment.resolved_at = utc_now()
+            self.store.save_comment(comment)
 
     def retry_screen(self, screen_id: str, instruction: str | None = None) -> StoredArtifact:
         """Regenerate exactly ONE mockup screen's HTML, splicing it back
@@ -833,10 +855,11 @@ class DesignRuntime:
 
         spec_artifact = self.store.artifacts.get("mockup-spec")
 
-        # Only comments scoped to this specific screen (element- or
+        # Only OPEN comments scoped to this specific screen (element- or
         # screen-level) -- a comment on a different screen has no business
-        # steering this one.
-        comments = [comment for comment in self.store.list_comments("mockup-pages") if (comment.location or {}).get("screen_id") == screen_id]
+        # steering this one, and an already-applied (resolved) comment
+        # shouldn't keep getting resent on every future retry.
+        comments = [comment for comment in self.store.list_comments("mockup-pages") if comment.status == "open" and (comment.location or {}).get("screen_id") == screen_id]
 
         step = next((candidate for candidate in self.workflow().steps if "mockup-pages" in candidate.outputs), None)
         input_ids = [input_id for input_id in (step.inputs if step else []) if input_id not in ("mockup-spec",)]
@@ -856,15 +879,26 @@ class DesignRuntime:
 
         scoped_instruction = (
             f"Regenerate ONLY the screen whose screen_id is exactly '{screen_id}' (see target_screen_id). "
-            "The full mockup-pages array and mockup-spec are included purely as style/navigation/structure "
-            "reference -- do not return them, and do not describe changes to any other screen. "
+            "The full mockup-pages array and mockup-spec are included as reference for this screen's style, "
+            "navigation, and structure -- do not return them, and do not describe changes to any other screen. "
+            "That reference also makes the other screens' CURRENT content the source of truth for shared "
+            "terminology: where this screen shows a label, field name, button, or heading for the same concept "
+            "(entity, action, status, etc.) that another screen already uses different wording for, match the "
+            "other screen's current wording exactly, even if that isn't spelled out explicitly below -- "
+            "cross-screen consistency is expected by default, not just when asked for. "
             "Return your answer as mockup-page-patch: a single object {screen_id, html} for just this one screen."
         ) + (f"\nAlso apply this specific instruction: {instruction}" if instruction else "")
 
         values, generated_by = self._execute_agent(agent_id, ["mockup-page-patch"], inputs, comments, scoped_instruction)
-        patch = values.get("mockup-page-patch")
+        patch = self._coerce_mockup_page_patch(values.get("mockup-page-patch"))
         if not isinstance(patch, dict) or not patch.get("html"):
-            raise ValueError(f"{generated_by.get('provider', 'the provider')} did not return a valid mockup-page-patch for '{screen_id}'")
+            # Include what actually came back -- otherwise this error is a
+            # dead end, same problem the "did not produce declared
+            # output(s)" error had before it got the same treatment.
+            raw = json.dumps(values.get("mockup-page-patch"), default=str)
+            if len(raw) > 500:
+                raw = raw[:500] + "...(truncated)"
+            raise ValueError(f"{generated_by.get('provider', 'the provider')} did not return a valid mockup-page-patch for '{screen_id}' (raw: {raw})")
         patch["screen_id"] = screen_id  # guard against the model relabeling it
         pages[index] = patch
 
@@ -874,8 +908,209 @@ class DesignRuntime:
             parent_version=pages_artifact.metadata.version,
         )
         self.store.artifacts.update_status("mockup-pages", ArtifactStatus.SUPERSEDED, pages_artifact.metadata.version)
+        self._resolve_comments(comments)
         self.store.append_event("MOCKUP_SCREEN_RETRIED", artifact_id="mockup-pages", details={"screen_id": screen_id, "version": saved.metadata.version, "parent_version": pages_artifact.metadata.version, "instruction": instruction})
         return saved
+
+    def add_mockup_screen(self, description: str, link_from_screen_id: str | None = None) -> StoredArtifact:
+        """Append exactly ONE new screen to the mockup set -- both
+        `mockup-spec` (its entry) and `mockup-pages` (its HTML) -- without
+        touching or resending any other screen, and without re-running the
+        entity/workflow CRUD-coverage validators that a full `retry` would.
+
+        Exists for the gap `retry_screen` structurally can't fill: a
+        comment sometimes reveals a screen is *missing* entirely (e.g. "the
+        Create button should open a real Create screen, not a modal" when
+        no such screen exists yet) -- `retry_screen` can only rewrite one
+        already-existing screen's HTML, so the model's only way to satisfy
+        that request within those bounds is to fake it in-place (a modal).
+        A full `retry("mockup-pages")` *can* add a screen, but it re-sends
+        every existing screen back through the model in one call and just
+        trusts it not to alter any of them -- observed live to drift.  This
+        splits the difference: the model only ever sees (and is only ever
+        allowed to touch) the one screen it's linking from, everything else
+        is passed through unchanged in code exactly like `retry_screen`.
+        """
+        if not description or not description.strip():
+            raise ValueError("a description of the new screen is required")
+        return self._create_linked_mockup_screen(description.strip(), link_from_screen_id, mode="add")
+
+    def split_mockup_screen(self, screen_id: str, extract_description: str) -> StoredArtifact:
+        """Move part of one existing screen out into a brand-new linked
+        screen -- both `mockup-spec` and `mockup-pages` -- leaving every
+        other screen untouched. `screen_id` is rewritten to remove the
+        extracted content (replaced with a link to the new screen); the
+        extracted content becomes the new screen's whole page.
+
+        Exists for the mirror-image gap `add_mockup_screen` doesn't cover:
+        sometimes a screen isn't *missing* something, it's *carrying* two
+        things that should be two screens -- observed live: a plan-year
+        list screen whose spec literally called for both "list of annual
+        plans" and "projects table" as separate bullets, but the model
+        merged them into one screen, so opening "Annual Audit Plans" always
+        jumped straight to one hardcoded year's projects instead of
+        letting you pick a year first. A full mockup regeneration can fix
+        this but re-sends and risks drifting every other screen; this
+        keeps the blast radius to exactly the two screens involved.
+        """
+        if not screen_id or not screen_id.strip():
+            raise ValueError("screen_id is required")
+        if not extract_description or not extract_description.strip():
+            raise ValueError("a description of what to extract is required")
+        return self._create_linked_mockup_screen(extract_description.strip(), screen_id.strip(), mode="split")
+
+    def _create_linked_mockup_screen(self, description: str, link_from_screen_id: str | None, *, mode: str) -> StoredArtifact:
+        self._require_initialized()
+
+        pages_artifact = self.store.artifacts.get("mockup-pages")
+        spec_artifact = self.store.artifacts.get("mockup-spec")
+        pages = [dict(page) for page in (pages_artifact.content or [])]
+        screens = [dict(screen) for screen in (spec_artifact.content or {}).get("screens", [])]
+        existing_ids = {screen.get("id") for screen in screens}
+
+        source_index = None
+        if link_from_screen_id is not None:
+            source_index = next((i for i, page in enumerate(pages) if page.get("screen_id") == link_from_screen_id), None)
+            if source_index is None:
+                raise ValueError(f"no mockup page found for screen_id '{link_from_screen_id}'")
+
+        agent_id = pages_artifact.metadata.generated_by.agent
+        if agent_id == "runtime":
+            raise ValueError("deterministic inspection artifacts do not support agent retry")
+
+        step = next((candidate for candidate in self.workflow().steps if "mockup-pages" in candidate.outputs), None)
+        input_ids = [input_id for input_id in (step.inputs if step else []) if input_id not in ("mockup-spec",)]
+        # Full mockup-spec + mockup-pages given as read-only context (ids to
+        # avoid colliding with, style/navigation to match) -- same "full
+        # context, narrow ask" shape as retry_screen.
+        inputs: dict[str, Any] = {
+            "mockup-spec": spec_artifact.content,
+            "mockup-pages": pages,
+            "new_screen_requirement": description,
+            "existing_screen_ids": sorted(existing_ids),
+            "link_from_screen_id": link_from_screen_id,
+        }
+        input_refs: list[ArtifactReference] = [ArtifactReference(logical_id="mockup-spec", version=spec_artifact.metadata.version)]
+        for input_id in input_ids:
+            try:
+                upstream = self.store.artifacts.get(input_id)
+            except FileNotFoundError:
+                continue
+            inputs[input_id] = upstream.content
+            input_refs.append(ArtifactReference(logical_id=input_id, version=upstream.metadata.version))
+
+        if mode == "split":
+            scoped_instruction = (
+                f"Extract this out of the existing screen '{link_from_screen_id}' (see link_from_screen_id) into "
+                f"its OWN new screen: {description} "
+                "The full mockup-spec and mockup-pages are included purely as read-only reference for existing "
+                "style, ids, and navigation -- do not return them, and do not describe or make changes to any "
+                "screen other than link_from_screen_id and your new screen. "
+                "You MUST return updated_source_page: the FULL replacement HTML for link_from_screen_id with the "
+                "extracted content REMOVED and replaced by a link (data-goto) to your new screen instead -- e.g. "
+                "a single hardcoded record's full detail becomes a genuine multi-record list where each row links "
+                "out to your new screen; a large embedded section becomes a summary/link. Do not otherwise change "
+                "link_from_screen_id's remaining content, style, or other buttons/navigation. "
+                "Choose a new screen `id` (snake_case) not already in existing_screen_ids, and a workflow_id or "
+                "entity_id consistent with the existing screens' conventions where applicable. "
+                "Return your answer as mockup-screen-addition: {screen, page, updated_source_page}."
+            )
+        else:
+            scoped_instruction = (
+                f"Add exactly ONE new screen to fill this gap in the current mockup set: {description} "
+                "The full mockup-spec and mockup-pages are included purely as read-only reference for existing "
+                "style, ids, and navigation -- do not return them, and do not describe or make changes to any "
+                "existing screen. Choose a new screen `id` (snake_case) not already in existing_screen_ids, and a "
+                "workflow_id or entity_id consistent with the existing screens' conventions where applicable."
+                + (
+                    f" This screen is reached from the existing screen '{link_from_screen_id}' (see "
+                    "link_from_screen_id) -- if (and only if) that screen needs updating to navigate to your new "
+                    "screen (e.g. a button's `data-goto` retargeted from a modal to your new screen's id), return "
+                    "its full replacement HTML as `updated_source_page`; otherwise omit `updated_source_page` "
+                    "entirely. Do not touch any screen other than link_from_screen_id."
+                    if link_from_screen_id is not None
+                    else " Do not set updated_source_page -- no existing screen was identified as needing a change."
+                ) + " Return your answer as mockup-screen-addition: {screen, page, updated_source_page}."
+            )
+
+        values, generated_by = self._execute_agent(agent_id, ["mockup-screen-addition"], inputs, [], scoped_instruction)
+        addition = values.get("mockup-screen-addition") or {}
+        new_screen = addition.get("screen") if isinstance(addition, dict) else None
+        new_page = addition.get("page") if isinstance(addition, dict) else None
+        if not isinstance(new_screen, dict) or not new_screen.get("id") or not isinstance(new_page, dict) or not new_page.get("html"):
+            raw = json.dumps(addition, default=str)
+            if len(raw) > 500:
+                raw = raw[:500] + "...(truncated)"
+            raise ValueError(f"{generated_by.get('provider', 'the provider')} did not return a valid mockup-screen-addition (raw: {raw})")
+        if new_screen["id"] in existing_ids:
+            raise ValueError(f"the model chose screen id '{new_screen['id']}', which already exists -- retry with a more specific description")
+        new_page["screen_id"] = new_screen["id"]  # guard against the model relabeling it
+
+        updated_source = addition.get("updated_source_page") if isinstance(addition, dict) else None
+        has_valid_source_patch = source_index is not None and isinstance(updated_source, dict) and updated_source.get("html")
+        if mode == "split" and not has_valid_source_patch:
+            raw = json.dumps(updated_source, default=str)
+            raise ValueError(f"{generated_by.get('provider', 'the provider')} did not return a valid updated_source_page for '{link_from_screen_id}', which splitting a screen requires (raw: {raw})")
+        if has_valid_source_patch:
+            updated_source["screen_id"] = link_from_screen_id
+            pages[source_index] = updated_source
+
+        screens.append(new_screen)
+        pages.append(new_page)
+
+        saved_spec = self.store.artifacts.save(
+            "mockup-spec", spec_artifact.metadata.type, {**spec_artifact.content, "screens": screens},
+            generated_by=generated_by, inputs=input_refs, requirements=spec_artifact.metadata.requirements,
+            parent_version=spec_artifact.metadata.version,
+        )
+        self.store.artifacts.update_status("mockup-spec", ArtifactStatus.SUPERSEDED, spec_artifact.metadata.version)
+        saved_pages = self.store.artifacts.save(
+            "mockup-pages", pages_artifact.metadata.type, pages,
+            generated_by=generated_by, inputs=input_refs, requirements=pages_artifact.metadata.requirements,
+            parent_version=pages_artifact.metadata.version,
+        )
+        self.store.artifacts.update_status("mockup-pages", ArtifactStatus.SUPERSEDED, pages_artifact.metadata.version)
+
+        state = self.store.load_state()
+        for candidate in self.workflow().steps:
+            if any(output in ("mockup-spec", "mockup-pages") for output in candidate.outputs) and candidate.type == "human-approval":
+                state.step_states[candidate.id] = StepStatus.PENDING
+                state.workflow_status = WorkflowStatus.PAUSED
+        self.store.save_state(state)
+
+        self.store.append_event("MOCKUP_SCREEN_SPLIT" if mode == "split" else "MOCKUP_SCREEN_ADDED", artifact_id="mockup-pages", details={
+            "new_screen_id": new_screen["id"], "link_from_screen_id": link_from_screen_id,
+            "mockup_pages_version": saved_pages.metadata.version, "mockup_spec_version": saved_spec.metadata.version,
+            "description": description,
+        })
+        return saved_pages
+
+    @staticmethod
+    def _coerce_mockup_page_patch(patch: Any) -> Any:
+        """Recover a `mockup-page-patch` value the model nested or wrapped
+        one level deeper than asked, once it's already landed under the
+        right top-level key.
+
+        `ProviderBackedAgent._recover_declared_keys` only fixes which
+        top-level key the answer landed under (the "did not produce
+        declared output(s)" failure); enforcing that top-level key via
+        Gemini's `responseSchema` doesn't constrain the shape *inside* that
+        key at all, since the envelope deliberately leaves each output's
+        own fields unconstrained (see `ProviderBackedAgent._output_kind`).
+        So a model can satisfy the schema with, e.g.,
+        `{"mockup-page-patch": {"result": {"screen_id": ..., "html": ...}}}`
+        or a single-item list -- confirmed live, the next failure after the
+        top-level fix landed. Two shapes handled defensively; anything else
+        falls through unchanged and the caller's own check raises with the
+        raw value attached for diagnosis.
+        """
+        if isinstance(patch, list) and len(patch) == 1:
+            patch = patch[0]
+        if isinstance(patch, dict) and not patch.get("html"):
+            for value in patch.values():
+                if isinstance(value, dict) and value.get("html"):
+                    return value
+        return patch
 
     # ---- Direct manual edits to system-model's list fields --------------
     # For a small correction (drop a stale requirement, rename a

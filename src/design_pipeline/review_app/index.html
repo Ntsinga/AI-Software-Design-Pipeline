@@ -72,9 +72,9 @@
       <div class="dialog-header"><div><p id="dialog-type" class="eyebrow"></p><h2 id="dialog-title">Artifact preview</h2></div><button id="close-dialog" class="icon-button" aria-label="Close preview">×</button></div>
       <div id="dialog-meta" class="meta-row"></div>
       <div id="dialog-content" class="preview-content"></div>
-      <div class="dialog-actions"><button id="approve-button" class="primary-button">Approve</button><button id="changes-button" class="secondary-button">Request changes</button><button id="retry-button" class="secondary-button">Retry generation</button></div>
+      <div id="dialog-actions" class="dialog-actions"><button id="approve-button" class="primary-button">Approve</button><button id="changes-button" class="secondary-button">Request changes</button><button id="retry-button" class="secondary-button">Retry generation</button></div>
       <form id="comment-form" class="comment-form"><label for="comment-text">Review comment</label><div><textarea id="comment-text" placeholder="Describe what should change…"></textarea><button class="secondary-button" type="submit">Add comment</button></div></form>
-      <div><p class="eyebrow">VERSION HISTORY</p><div id="version-list" class="version-list"></div></div>
+      <div id="version-section"><p class="eyebrow">VERSION HISTORY</p><div id="version-list" class="version-list"></div></div>
     </dialog>
 
     <dialog id="app-modal" class="app-modal">
@@ -90,6 +90,7 @@
     </dialog>
 
     <script src="/review-assets/mermaid.min.js"></script>
+    <script src="/review-assets/screen_tree.js"></script>
     <script src="/review-assets/app.js"></script>
   </body>
 </html>

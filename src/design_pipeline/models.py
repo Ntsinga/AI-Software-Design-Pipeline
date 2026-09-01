@@ -171,6 +171,26 @@ class MockupPage(BaseModel):
     html: str = Field(min_length=1)
 
 
+class MockupScreenAddition(BaseModel):
+    """The declared shape for `DesignRuntime.add_mockup_screen`: exactly
+    one brand-new screen (spec entry + page) to append, plus an optional
+    full-HTML replacement for the ONE existing screen that should now link
+    to it (e.g. a "Create" button retargeted from a modal to the new
+    screen's id via `data-goto`).
+
+    Deliberately scoped this way, mirroring `retry_screen`'s
+    `mockup-page-patch`: the model never sees or touches any screen other
+    than the one optional `updated_source_page`, so adding a screen can't
+    silently drift the rest of the mockup set the way a full mockup-spec
+    regeneration risks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    screen: MockupScreen
+    page: MockupPage
+    updated_source_page: MockupPage | None = None
+
+
 class ArtifactReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

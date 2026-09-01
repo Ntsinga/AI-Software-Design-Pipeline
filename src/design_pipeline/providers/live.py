@@ -21,6 +21,37 @@ from ..provider_config import ProviderConfigurationError, ProviderSettings
 from .base import ProviderRequest, ProviderResponse, ToolCall
 
 
+def _object_schema_for(shape: dict[str, Any], *, upper: bool) -> dict[str, Any]:
+    """Translate one `ProviderRequest.response_object_keys` shape entry
+    into a JSON Schema (OpenAI, `upper=False`) or Gemini's OpenAPI-subset
+    schema (`upper=True`, whose type names are uppercase: OBJECT, STRING,
+    ...). `shape["schema"]`, built by `ProviderBackedAgent._field_schema`,
+    is already the full nested structure (real required properties at
+    every level, not just the top) -- this just relabels each `type` value
+    for the target provider; `None` anywhere in it becomes an unconstrained
+    object, which is otherwise satisfiable by `{}` (confirmed live, twice)."""
+    def type_name(name: str) -> str:
+        return name.upper() if upper else name
+
+    def translate(node: dict[str, Any] | None) -> dict[str, Any]:
+        if node is None:
+            return {"type": type_name("object")}
+        if node["type"] == "object":
+            return {
+                "type": type_name("object"),
+                "properties": {name: translate(sub) for name, sub in node["properties"].items()},
+                "required": node["required"],
+            }
+        if node["type"] == "array":
+            return {"type": type_name("array"), "items": translate(node["items"])}
+        return {"type": type_name(node["type"])}
+
+    inner = translate(shape["schema"])
+    if shape["kind"] == "array":
+        return {"type": type_name("array"), "items": inner}
+    return inner
+
+
 class LiveProviderError(RuntimeError):
     """A provider request failed or did not return usable text."""
 
@@ -79,9 +110,28 @@ class OpenAIResponsesProvider(_HTTPProvider):
             "model": request.model or self.model,
             "temperature": request.temperature,
             "store": False,
+            "max_output_tokens": self.settings.max_output_tokens,
         }
         if request.tools:
             body["tools"] = [{"type": "function", "name": tool.name, "description": tool.description, "parameters": tool.parameters} for tool in request.tools]
+        elif request.response_object_keys:
+            # Same rationale as GeminiProvider's responseSchema branch --
+            # enforce the declared shape natively rather than by prompt text
+            # alone. `strict: False`: outputs whose `fields` are unknown
+            # (deep/nested pydantic schemas) stay unconstrained objects with
+            # no `properties`, and OpenAI's strict mode requires every
+            # nested object to fully enumerate its properties with
+            # `additionalProperties: false`.
+            body["text"] = {"format": {
+                "type": "json_schema",
+                "name": "pipeline_output",
+                "strict": False,
+                "schema": {
+                    "type": "object",
+                    "properties": {name: _object_schema_for(shape, upper=False) for name, shape in request.response_object_keys.items()},
+                    "required": list(request.response_object_keys),
+                },
+            }}
         if request.history:
             body["previous_response_id"] = request.history
             body["input"] = [{"type": "function_call_output", "call_id": call_id, "output": output} for call_id, output in request.tool_results.items()]
@@ -183,16 +233,48 @@ class GeminiProvider(_HTTPProvider):
                 "role": "user",
                 "parts": [{"functionResponse": {"name": pending_calls.get(call_id, call_id), "response": {"result": output}}} for call_id, output in request.tool_results.items()],
             }]
-        body: dict[str, Any] = {"contents": contents, "generationConfig": {"temperature": request.temperature}}
+        body: dict[str, Any] = {"contents": contents, "generationConfig": {"temperature": request.temperature, "maxOutputTokens": self.settings.max_output_tokens}}
         if request.system_prompt:
             body["systemInstruction"] = {"parts": [{"text": request.system_prompt}]}
         if request.tools:
             body["tools"] = [{"functionDeclarations": [{"name": tool.name, "description": tool.description, "parameters": tool.parameters} for tool in request.tools]}]
+        elif request.response_object_keys:
+            # Enforce the declared top-level keys via Gemini's native
+            # structured output instead of prompt text alone -- prompt-only
+            # guidance is what let flash-lite rename/wrap/flatten a
+            # hyphenated key like `mockup-page-patch` live. Deliberately
+            # shallow (no nested field schemas): Gemini's schema subset
+            # doesn't reliably support the $defs/$ref our full pydantic
+            # schemas use, and only the top-level shape needs enforcing --
+            # inner field correctness stays on prompt guidance. Mutually
+            # exclusive with `tools` in Gemini's API, hence `elif`.
+            body["generationConfig"]["responseMimeType"] = "application/json"
+            body["generationConfig"]["responseSchema"] = {
+                "type": "OBJECT",
+                "properties": {name: _object_schema_for(shape, upper=True) for name, shape in request.response_object_keys.items()},
+                "required": list(request.response_object_keys),
+            }
 
         model_name = request.model or self.model
         payload = self._post_json(f"{self.endpoint}/{model_name}:generateContent", {"x-goog-api-key": self.settings.api_key or ""}, body, "Gemini")
 
-        parts = (((payload.get("candidates") or [{}])[0]).get("content") or {}).get("parts") or []
+        candidate = (payload.get("candidates") or [{}])[0]
+        parts = (candidate.get("content") or {}).get("parts") or []
+        finish_reason = candidate.get("finishReason")
+        if finish_reason == "MAX_TOKENS":
+            # Otherwise this surfaces as "invalid JSON: unterminated
+            # string" -- a cryptic parse error miles away from the actual
+            # cause (the response got cut off mid-string before it could
+            # finish). Confirmed live: mockup-screen-addition can ask for
+            # up to two full HTML pages (page + updated_source_page) in one
+            # answer, needing more headroom than a single-page patch does.
+            raise LiveProviderError(
+                f"Gemini's response was truncated at the {self.settings.max_output_tokens}-token output limit before "
+                "it could finish -- raise DESIGN_PIPELINE_MAX_OUTPUT_TOKENS (or ask for something smaller, e.g. "
+                "fewer/simpler screens at once) and try again."
+            )
+        if finish_reason and finish_reason not in ("STOP", "TOOL_CALLS"):
+            raise LiveProviderError(f"Gemini stopped without a usable answer (finishReason: {finish_reason})")
         tool_calls: list[ToolCall] = []
         pending_calls = {}
         for part in parts:

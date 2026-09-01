@@ -10,7 +10,52 @@ structural rules the tools themselves can't see.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+# Raw ASCII control bytes (excluding \t \n \r, legitimate whitespace) have
+# no legitimate place in HTML text -- their presence is always a sign of
+# corrupted generation, never real content.
+_CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _html_pages_from(values: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every {screen_id, html}-shaped page this call could have produced,
+    across all three mockup-generation call shapes: the full mockups step
+    (`mockup-pages`), a single-screen retry (`mockup-page-patch`), and
+    add/split-screen (`mockup-screen-addition`'s `page` and
+    `updated_source_page`)."""
+    pages: list[dict[str, Any]] = []
+    if isinstance(values.get("mockup-pages"), list):
+        pages.extend(page for page in values["mockup-pages"] if isinstance(page, dict))
+    if isinstance(values.get("mockup-page-patch"), dict):
+        pages.append(values["mockup-page-patch"])
+    addition = values.get("mockup-screen-addition")
+    if isinstance(addition, dict):
+        pages.extend(page for page in (addition.get("page"), addition.get("updated_source_page")) if isinstance(page, dict))
+    return pages
+
+
+def no_control_characters_in_html(values: dict[str, Any], inputs: dict[str, Any]) -> list[str]:
+    """Observed live: a single-screen retry that should only have removed
+    one unrelated button instead came back with its decorative folder
+    icon (📁, a 4-byte non-BMP Unicode character) replaced by four literal
+    \\x01 bytes -- a known class of model/API mishandling of
+    astral-plane/emoji characters, most likely under structured-output
+    constraints. Silent when shipped: it just renders as boxes/tofu in the
+    browser. This turns it into a loud, automatically-retried failure
+    instead."""
+    errors: list[str] = []
+    for page in _html_pages_from(values):
+        html = page.get("html") or ""
+        match = _CONTROL_CHAR_PATTERN.search(html)
+        if match:
+            errors.append(
+                f"screen '{page.get('screen_id', '?')}' HTML contains a raw control character (0x{ord(match.group()):02x}) at "
+                "that position -- this is always corrupted output (often a mangled emoji/icon), never legitimate content. "
+                "Regenerate the affected text/icon; consider a plain ASCII or HTML-entity substitute if the same character keeps corrupting."
+            )
+    return errors
 
 
 def no_raw_ids_rendered_in_html(values: dict[str, Any], inputs: dict[str, Any]) -> list[str]:
