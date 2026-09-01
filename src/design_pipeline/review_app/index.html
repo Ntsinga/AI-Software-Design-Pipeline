@@ -12,22 +12,47 @@
         <div class="brand"><span class="brand-mark">✦</span><span>Design Pipeline</span></div>
         <p class="sidebar-label">REVIEW WORKSPACE</p>
         <nav class="nav" aria-label="Workspace sections">
-          <button class="nav-link active" data-view="overview">Overview</button>
-          <button class="nav-link" data-view="system">System model</button>
-          <button class="nav-link" data-view="data-model">Data model</button>
-          <button class="nav-link" data-view="architecture">Architecture</button>
-          <button class="nav-link" data-view="mockups">Mockups</button>
-          <button class="nav-link" data-view="history">History</button>
+          <button class="nav-link active" data-view="projects">📁 Projects</button>
+          <!-- Hidden until a project is open (see applyActiveTab in app.js) --
+               display:contents so these lay out as direct .nav grid items,
+               not as a single boxed child, while still being toggleable as
+               a group. -->
+          <div class="project-tabs hidden">
+            <button class="nav-link" data-view="overview">Overview</button>
+            <button class="nav-link" data-view="system">System model</button>
+            <button class="nav-link" data-view="data-model">Data model</button>
+            <button class="nav-link" data-view="architecture">Architecture</button>
+            <button class="nav-link" data-view="mockups">Mockups</button>
+            <button class="nav-link" data-view="history">History</button>
+          </div>
         </nav>
         <div class="sidebar-footer"><span id="workflow-status" class="status-pill muted">Loading</span><button id="refresh-button" class="text-button">Refresh</button></div>
       </aside>
 
       <main class="main-content">
-        <header class="topbar"><div><p class="eyebrow">LOCAL DESIGN REVIEW</p><h1 id="project-name">Design Pipeline</h1></div><div class="topbar-actions"><select id="project-select" class="secondary-button" aria-label="Current project" title="Current project"></select><button id="new-project-button" class="secondary-button" title="Create a new project">+ New project</button><select id="provider-select" class="secondary-button" aria-label="Model provider" title="Model provider"><option value="stub">Stub (deterministic)</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><button id="run-button" class="primary-button">Generate / resume</button></div></header>
+        <!-- App-level brand: always pinned, never rewritten by JS -- the
+             active project's own identity lives one level down, in
+             .project-header below (see app.js's refresh()). -->
+        <header class="topbar"><div><p class="eyebrow">LOCAL DESIGN REVIEW</p><h1>AI Software Design Pipeline</h1></div></header>
+
+        <!-- Project-level bar: hidden while on the Projects picker, shown
+             for every view inside an open project (applyActiveTab in
+             app.js toggles this alongside .project-tabs above). This is
+             where the active project's own name and its run controls
+             live now, instead of the app-level topbar. -->
+        <div class="project-header hidden">
+          <div class="project-header-identity"><button id="back-to-projects" class="text-button" title="Back to all projects">← All projects</button><h2 id="project-header-name">Project</h2></div>
+          <div class="project-header-actions"><select id="provider-select" class="secondary-button" aria-label="Model provider" title="Model provider"><option value="stub">Stub (deterministic)</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><button id="run-button" class="primary-button">Generate / resume</button></div>
+        </div>
 
         <section id="notice" class="notice hidden" role="status"></section>
 
-        <section id="overview-view" class="view active">
+        <section id="projects-view" class="view active">
+          <div class="section-heading"><div><p class="eyebrow">PROJECT MANAGEMENT</p><h2>Projects</h2></div><div class="section-actions"><button id="new-project-button" class="primary-button" title="Create a new project">+ New project</button></div></div>
+          <div id="project-cards" class="project-card-grid empty-state">Loading projects…</div>
+        </section>
+
+        <section id="overview-view" class="view">
           <div class="hero-card">
             <div><p class="eyebrow">START WITH REQUIREMENTS</p><h2>Upload a business requirements document</h2><p>Use a Word document (.docx), PDF, Markdown, plain text, or reStructuredText. The pipeline extracts the text as its BRD input, then generates the business, solution, and system models.</p></div>
             <div class="upload-control"><input id="document-input" type="file" accept=".docx,.pdf,.md,.markdown,.txt,.rst,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small><p id="brd-status" class="brd-status hidden"></p></div>

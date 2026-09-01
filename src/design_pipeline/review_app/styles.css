@@ -16,7 +16,28 @@ button { cursor:pointer; }
 .text-button { color:#c8d7f4; text-align:left; border:0; background:transparent; padding:0; font-size:13px; }
 .main-content { min-width:0; padding:38px clamp(22px, 5vw, 72px) 64px; }
 .topbar,.section-heading,.hero-card,.dialog-header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }
-.topbar { margin-bottom:30px; }.topbar h1 { margin:5px 0 0; font-size:30px; letter-spacing:-.03em; }.topbar-actions,.dialog-actions { display:flex; gap:10px; flex-wrap:wrap; }
+.topbar { margin-bottom:18px; }.topbar h1 { margin:5px 0 0; font-size:30px; letter-spacing:-.03em; }.topbar-actions,.dialog-actions { display:flex; gap:10px; flex-wrap:wrap; }
+/* Project-level bar: the active project's own name + run controls, one
+   level below the always-pinned app topbar. Hidden entirely on the
+   Projects picker (see applyActiveTab in app.js). */
+.project-header { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; padding:14px 18px; margin-bottom:22px; background:#fff; border:1px solid var(--line); border-radius:12px; }
+.project-header.hidden { display:none; }
+.project-header-identity { display:flex; align-items:center; gap:14px; }
+.project-header-identity h2 { margin:0; font-size:19px; }
+.project-header-actions { display:flex; gap:10px; flex-wrap:wrap; }
+/* Nav: the 6 project-workspace tabs, hidden as a group until a project is
+   open. display:contents so they lay out as direct .nav grid items (not
+   boxed inside this wrapper) while still toggleable together; the .hidden
+   override needs the extra specificity to reliably win over that. */
+.project-tabs { display:contents; }
+.project-tabs.hidden { display:none; }
+/* Projects picker: one card per project plus room to grow -- matches
+   .artifact-grid's sizing conventions. */
+.project-card-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; }
+.project-card { display:grid; gap:6px; text-align:left; border:1px solid var(--line); background:#fff; border-radius:12px; padding:18px; box-shadow:0 3px 10px rgba(15,23,42,.025); }
+.project-card:hover { border-color:#93c5fd; transform:translateY(-1px); }
+.project-card-name { font-weight:700; font-size:15px; color:var(--ink); }
+.project-card-id { font-size:12px; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
 .primary-button,.secondary-button,.icon-button { border-radius:8px; border:1px solid transparent; padding:10px 14px; font-weight:700; }
 .primary-button { background:var(--blue); color:var(--white); }.primary-button:hover { background:#1d4ed8; }.secondary-button { background:var(--white); border-color:var(--line); color:var(--ink); }.secondary-button:hover { background:#f8fafc; }.icon-button { background:transparent; font-size:24px; line-height:1; padding:4px 8px; }
 .notice { padding:13px 16px; margin:0 0 22px; border-radius:8px; background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; }.notice.error { background:#fff1f2; color:#9f1239; border-color:#fecdd3; }.notice.loading { background:#eff6ff; color:#1e40af; border-color:#93c5fd; display:flex; align-items:center; gap:10px; }.notice.loading::before { content:""; display:inline-block; width:14px; height:14px; border:2px solid #bfdbfe; border-top-color:#2563eb; border-radius:50%; animation:spin .8s linear infinite; flex-shrink:0; }.hidden { display:none; }
@@ -138,4 +159,4 @@ button:disabled { opacity:.65; cursor:not-allowed; }
 .mock-comment-scope { flex-shrink:0; color:#92400e; font-size:11px; font-weight:600; white-space:nowrap; }
 .mock-comment-scope code { background:rgba(146,64,14,.1); padding:1px 4px; border-radius:3px; }
 .mock-comment-text { color:var(--ink); }
-@media (max-width:850px) { .app-shell { grid-template-columns:1fr; }.sidebar { min-height:auto; padding:14px; }.nav { grid-template-columns:repeat(5,minmax(0,1fr)); overflow:auto; }.sidebar-label,.sidebar-footer { display:none; }.main-content { padding:26px 18px 48px; }.topbar,.hero-card,.section-heading { flex-direction:column; }.topbar-actions { width:100%; }.stat-grid { grid-template-columns:repeat(2,1fr); }.model-grid,.mockup-layout { grid-template-columns:1fr; }.upload-control { width:100%; }.mock-content { grid-template-columns:1fr; } }
+@media (max-width:850px) { .app-shell { grid-template-columns:1fr; }.sidebar { min-height:auto; padding:14px; }.nav { grid-template-columns:repeat(5,minmax(0,1fr)); overflow:auto; }.sidebar-label,.sidebar-footer { display:none; }.main-content { padding:26px 18px 48px; }.topbar,.hero-card,.section-heading,.project-header { flex-direction:column; align-items:stretch; }.topbar-actions,.project-header-actions { width:100%; }.stat-grid { grid-template-columns:repeat(2,1fr); }.model-grid,.mockup-layout { grid-template-columns:1fr; }.upload-control { width:100%; }.mock-content { grid-template-columns:1fr; } }
