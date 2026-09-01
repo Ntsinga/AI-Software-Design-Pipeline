@@ -884,7 +884,12 @@ function renderBrdStatus(history) {
   el.textContent = `📄 ${lastIngest.details?.filename || "Document"} uploaded ${new Date(lastIngest.timestamp).toLocaleString()} -- click "Generate / resume" above to build your project from it.`;
 }
 async function refresh() {
-  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-name").textContent = state.status.project_id || "Design Pipeline"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); const history = await api("/history"); renderHistoryList(history); renderBrdStatus(history); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
+  // The heading previously showed state.status.project_id verbatim -- the
+  // internal URL-safe slug ("audit-module"), not the display name typed
+  // into "+ New project" ("Audit Module"). The friendly name lives on the
+  // matching entry in state.projects (populated by refreshProjects, which
+  // always runs before this), not in /status at all.
+  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-name").textContent = state.projects.find((project) => project.id === state.status.project_id)?.name || state.status.project_id || "Design Pipeline"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); const history = await api("/history"); renderHistoryList(history); renderBrdStatus(history); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
 }
 async function openArtifact(id) {
   try {
@@ -947,6 +952,18 @@ window.addEventListener("hashchange", onHashChange);
 
 async function refreshProjects() {
   try { state.projects = await api("/projects"); } catch (error) { state.projects = []; }
+  // "default" (parseHash's fallback when the URL carries no #/projects/...
+  // segment -- i.e. just visiting the plain root URL) is a hash fallback
+  // value, not a guarantee any project with that id actually exists.
+  // Observed live: a deployment whose only project is "audit-module" kept
+  // requesting /projects/default/status forever (404), the dropdown showed
+  // blank (its value set to an id absent from its own options), and every
+  // panel was stuck on "No artifacts yet" -- indistinguishable from the
+  // project genuinely being empty. Fall back to the first real project
+  // whenever the current id isn't one of them.
+  if (state.projects.length && !state.projects.some((project) => project.id === state.projectId)) {
+    state.projectId = state.projects[0].id;
+  }
   const select = $("#project-select"); if (!select) return;
   select.innerHTML = state.projects.map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name || project.id)}</option>`).join("");
   select.value = state.projectId;
@@ -1164,7 +1181,7 @@ $("#comment-form").addEventListener("submit", async (event) => {
   const { projectId, tab } = parseHash();
   state.projectId = projectId;
   applyActiveTab(tab);
-  await refreshProjects();
+  await refreshProjects(); // may correct state.projectId -- see its own comment
   await refresh();
-  if (!window.location.hash) updateHash({ projectId, tab });
+  if (parseHash().projectId !== state.projectId) updateHash({ projectId: state.projectId, tab });
 })();
