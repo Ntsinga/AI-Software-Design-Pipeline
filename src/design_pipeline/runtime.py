@@ -177,6 +177,22 @@ class DesignRuntime:
     def _require_initialized(self) -> None:
         if not self.store.is_initialized():
             raise FileNotFoundError("project is not initialized; run `design init`")
+        # Self-heal the on-disk agent/workflow YAML. In Postgres mode,
+        # `is_initialized()` reflects a `project_state` row in the database
+        # -- durable -- but the agent/workflow config files themselves still
+        # live on local disk (see PostgresProjectStore's docstring). On a
+        # host with an ephemeral filesystem (e.g. Render), those files are
+        # gone after any redeploy or restart while the Postgres row still
+        # says "initialized", so every call downstream of here (workflow(),
+        # restart_generation(), run(), ...) would otherwise crash with
+        # FileNotFoundError reading design-pipeline.yaml -- observed live in
+        # production. `_write_defaults()` only writes a file that doesn't
+        # already exist, so this never overwrites a real customization still
+        # present on disk; it only recreates what the ephemeral filesystem
+        # actually lost.
+        for directory in (self.store.paths.agents, self.store.paths.workflows, self.store.paths.input):
+            directory.mkdir(parents=True, exist_ok=True)
+        self._write_defaults()
 
     def workflow(self):
         self._require_initialized()
