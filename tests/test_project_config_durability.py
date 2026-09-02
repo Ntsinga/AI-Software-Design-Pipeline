@@ -53,7 +53,7 @@ def test_initializing_seeds_the_db_with_the_default_config(runtime):
     assert "id: initial-design" in config["workflow_file"]
 
 
-def test_a_real_customization_survives_disk_being_wiped(runtime):
+def test_a_real_customization_survives_disk_being_wiped(runtime, tmp_path):
     # Simulate hand-editing an agent's prompt (exactly what happened this
     # session, editing ux.yaml directly) -- must persist through the
     # project_config sync path, not just re-seed the stock default.
@@ -62,23 +62,30 @@ def test_a_real_customization_survives_disk_being_wiped(runtime):
     ux_path.write_text(customized, encoding="utf-8")
     runtime._sync_config()  # the write path: pushes the customization into Postgres
 
-    # Simulate the ephemeral-disk wipe: every local file gone, fresh runtime.
+    # Simulate the ephemeral-disk wipe: every local file gone. This only
+    # ever actually happens between process restarts, not mid-process (the
+    # self-heal in _require_initialized runs once per DesignRuntime
+    # instance, not once per request -- see its own comment) -- so restore
+    # is verified against a fresh instance, exactly as a redeploy would
+    # construct one, not by reusing the already-synced `runtime` fixture.
     for path in runtime.store.paths.agents.glob("*.yaml"):
         path.unlink()
     (runtime.store.paths.workflows / "design-pipeline.yaml").unlink()
 
-    runtime.workflow()  # triggers _require_initialized -> _sync_config's restore path
+    restarted = DesignRuntime(tmp_path)
+    restarted.workflow()  # triggers _require_initialized -> _sync_config's restore path
 
-    assert (runtime.store.paths.agents / "ux.yaml").read_text(encoding="utf-8") == customized
+    assert (restarted.store.paths.agents / "ux.yaml").read_text(encoding="utf-8") == customized
 
 
-def test_a_staged_brd_survives_disk_being_wiped(runtime):
+def test_a_staged_brd_survives_disk_being_wiped(runtime, tmp_path):
     runtime.ingest_brd_text("# Business Requirements\n\nSome staged content.", "BRD.md")
     brd_path = runtime.store.paths.input / "BRD.md"
     assert brd_path.exists()
 
-    brd_path.unlink()  # simulate the wipe
-    runtime.workflow()  # any _require_initialized call triggers the restore
+    brd_path.unlink()  # simulate the wipe (see the comment above)
+    restarted = DesignRuntime(tmp_path)
+    restarted.workflow()  # any _require_initialized call triggers the restore
 
     assert brd_path.exists()
     assert "Some staged content" in brd_path.read_text(encoding="utf-8")

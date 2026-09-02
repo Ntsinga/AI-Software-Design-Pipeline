@@ -153,6 +153,9 @@ class DesignRuntime:
 
     def __init__(self, root: Path | str, project_id: str = DEFAULT_PROJECT_ID):
         self.store = build_project_store(root, project_id=project_id)
+        # See _require_initialized(): _sync_config() only needs to run once
+        # per process, not once per request.
+        self._config_synced = False
 
     @property
     def root(self) -> Path:
@@ -165,6 +168,7 @@ class DesignRuntime:
     def initialize(self, project_id: str | None = None) -> ProjectState:
         state = self.store.initialize(project_id)
         self._sync_config()
+        self._config_synced = True
         if not self.store.read_events():
             self.store.append_event("PROJECT_INITIALIZED", details={"project_id": state.project_id})
         return state
@@ -238,9 +242,22 @@ class DesignRuntime:
         # restart_generation(), run(), ...) would otherwise crash with
         # FileNotFoundError reading design-pipeline.yaml -- observed live in
         # production.
+        #
+        # Only actually needs to run once per process, not once per
+        # request: _sync_config() does a Postgres round-trip plus reading
+        # every agent/workflow file, and this method sits at the top of ~20
+        # other methods -- one page load's worth of API calls was paying
+        # that cost that many times over, observed live as "every page load
+        # is slow" (in both local dev and production alike -- nothing
+        # Render/Neon-specific about it, this ran the same regardless of
+        # host). Nothing else touches this process's own disk between
+        # requests, so a second reconciliation in the same process can only
+        # ever reach the same conclusion as the first.
         for directory in (self.store.paths.agents, self.store.paths.workflows, self.store.paths.input):
             directory.mkdir(parents=True, exist_ok=True)
-        self._sync_config()
+        if not self._config_synced:
+            self._sync_config()
+            self._config_synced = True
 
     def workflow(self):
         self._require_initialized()
