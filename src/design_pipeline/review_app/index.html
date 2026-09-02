@@ -41,7 +41,12 @@
              where the active project's own name and its run controls
              live now, instead of the app-level topbar. -->
         <div class="project-header hidden">
-          <div class="project-header-identity"><button id="back-to-projects" class="text-button" title="Back to all projects">← All projects</button><h2 id="project-header-name">Project</h2></div>
+          <div class="project-header-identity">
+            <button id="back-to-projects" class="text-button" title="Back to all projects">← All projects</button>
+            <h2 id="project-header-name" class="project-name-view" title="Click to rename">Project</h2>
+            <input id="project-header-name-input" class="project-name-input hidden" aria-label="Project name" />
+            <button id="delete-project-button" class="icon-button" title="Delete this project">🗑️</button>
+          </div>
           <div class="project-header-actions"><select id="provider-select" class="secondary-button" aria-label="Model provider" title="Model provider"><option value="stub">Stub (deterministic)</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><button id="run-button" class="primary-button">Generate / resume</button></div>
         </div>
 

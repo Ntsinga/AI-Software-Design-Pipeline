@@ -214,6 +214,15 @@ def create_app(root: Path | str = "."):
     def create_project(request: ProjectCreation):
         return call(registry.create_project, request.name)
 
+    @app.patch("/projects/{project_id}")
+    def rename_project(project_id: str, request: ProjectCreation):
+        return call(registry.rename_project, project_id, request.name)
+
+    @app.delete("/projects/{project_id}", status_code=204)
+    def delete_project(project_id: str):
+        call(registry.delete_project, project_id)
+        return None
+
     # ---- Per-project endpoints -----------------------------------------
     # Every endpoint below exists in two forms:
     #   /projects/{project_id}/<path>   -- the canonical, forward-facing shape

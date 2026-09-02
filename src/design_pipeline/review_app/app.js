@@ -1019,6 +1019,56 @@ async function createProjectFlow() {
 $("#new-project-button")?.addEventListener("click", createProjectFlow);
 $("#back-to-projects")?.addEventListener("click", () => updateHash({ projectId: null, tab: "projects" }));
 
+// Inline rename: click the header name to swap it for a text input (same
+// view/edit-swap pattern the data-model tab already uses for entity/field
+// names), save on blur or Enter, discard on Escape or an empty/unchanged
+// value.
+function startProjectNameEdit() {
+  const view = $("#project-header-name");
+  const input = $("#project-header-name-input");
+  input.value = view.textContent;
+  view.classList.add("hidden");
+  input.classList.remove("hidden");
+  input.focus();
+  input.select();
+}
+function cancelProjectNameEdit() {
+  $("#project-header-name").classList.remove("hidden");
+  $("#project-header-name-input").classList.add("hidden");
+}
+async function saveProjectNameEdit() {
+  const view = $("#project-header-name");
+  const input = $("#project-header-name-input");
+  const value = input.value.trim();
+  if (!value || value === view.textContent) return cancelProjectNameEdit();
+  try {
+    const updated = await api(`/projects/${encodeURIComponent(state.projectId)}`, { method: "PATCH", body: JSON.stringify({ name: value }) });
+    await refreshProjects(); // keeps the Projects picker's cards in sync too
+    view.textContent = updated.name;
+    cancelProjectNameEdit();
+  } catch (error) { showNotice(error.message, true); cancelProjectNameEdit(); }
+}
+$("#project-header-name")?.addEventListener("click", startProjectNameEdit);
+$("#project-header-name-input")?.addEventListener("blur", saveProjectNameEdit);
+$("#project-header-name-input")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); event.target.blur(); }
+  else if (event.key === "Escape") { event.preventDefault(); cancelProjectNameEdit(); }
+});
+
+$("#delete-project-button")?.addEventListener("click", async () => {
+  const name = state.projects.find((project) => project.id === state.projectId)?.name || state.projectId;
+  const confirmed = await appConfirm(
+    `This permanently deletes "${name}" and everything in it -- every artifact, comment, approval, and version history. This cannot be undone.`,
+    { title: "Delete project", confirmLabel: "Delete permanently", danger: true },
+  );
+  if (!confirmed) return;
+  try {
+    await api(`/projects/${encodeURIComponent(state.projectId)}`, { method: "DELETE" });
+    showNotice(`"${name}" deleted.`);
+    updateHash({ projectId: null, tab: "projects" }); // back to the Projects picker
+  } catch (error) { showNotice(error.message, true); }
+});
+
 $("#document-input").addEventListener("change", (event) => { $("#file-name").textContent = event.target.files[0]?.name || "No file selected"; });
 $("#provider-select").addEventListener("change", async (event) => { const previous = state.status?.provider?.provider || "stub"; try { const provider = await api("/provider", { method: "PUT", body: JSON.stringify({ provider: event.target.value }) }); showNotice(`Switched to ${titleCase(provider.provider)}.`); await refresh(); } catch (error) { event.target.value = previous; showNotice(error.message, true); } });
 

@@ -139,6 +139,63 @@ def test_api_accepts_base64_word_upload(tmp_path):
     assert "BR-099" in (tmp_path / ".design" / "default" / "input" / "BRD.md").read_text(encoding="utf-8")
 
 
+def test_project_can_be_renamed(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    project = client.post("/projects", json={"name": "Original Name"}).json()
+
+    response = client.patch(f"/projects/{project['id']}", json={"name": "Renamed Project"})
+    assert response.status_code == 200
+    assert response.json() == {"id": project["id"], "name": "Renamed Project"}
+
+    # The id (the storage slug) never changes -- only the display name --
+    # so the project is still reachable at the same URL.
+    listed = {entry["id"]: entry["name"] for entry in client.get("/projects").json()}
+    assert listed[project["id"]] == "Renamed Project"
+    assert client.get(f"/projects/{project['id']}/status").status_code == 200
+
+
+def test_renaming_an_unknown_project_404s(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    response = client.patch("/projects/does-not-exist", json={"name": "New Name"})
+    assert response.status_code == 404
+
+
+def test_project_can_be_deleted(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    project = client.post("/projects", json={"name": "Throwaway"}).json()
+    client.post(f"/projects/{project['id']}/documents/brd", json={"filename": "requirements.md", "text": "# BR-001\nSomething."})
+
+    response = client.delete(f"/projects/{project['id']}")
+    assert response.status_code == 204
+
+    assert project["id"] not in {entry["id"] for entry in client.get("/projects").json()}
+    # Gone, not just delisted -- the underlying project state is gone too.
+    assert client.get(f"/projects/{project['id']}/status").status_code == 404
+    assert not (tmp_path / ".design" / project["id"]).exists()
+
+
+def test_deleting_an_unknown_project_404s(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    response = client.delete("/projects/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_a_new_project_can_reuse_an_id_after_the_original_is_deleted(tmp_path):
+    """The runtime cache (RuntimeRegistry._runtimes) must be invalidated on
+    delete -- otherwise a same-named project created right after would
+    silently resurrect the deleted one's cached, stale in-memory state."""
+    client = TestClient(create_app(tmp_path))
+    first = client.post("/projects", json={"name": "reused-name"}).json()
+    client.get(f"/projects/{first['id']}/status")  # populate the runtime cache
+    client.delete(f"/projects/{first['id']}")
+
+    second = client.post("/projects", json={"name": "reused-name"}).json()
+    assert second["id"] == first["id"]
+    status = client.get(f"/projects/{second['id']}/status").json()
+    assert status["workflow_status"] == "not_started"
+    assert status["artifacts"] == []
+
+
 def test_api_accepts_base64_pdf_upload(tmp_path):
     client = TestClient(create_app(tmp_path))
     client.post("/initialize")

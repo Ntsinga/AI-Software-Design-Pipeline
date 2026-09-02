@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -62,6 +64,31 @@ def atomic_write(path: Path, content: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _clear_readonly_and_retry(func, path, exc_info) -> None:
+    """`shutil.rmtree`'s `onexc` hook: a read-only attribute (common on
+    files OneDrive has synced) makes `os.rmdir`/`os.unlink` raise
+    PermissionError on Windows even for the file's owner. Clear it and
+    retry the same operation once; anything else propagates."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def rmtree_with_retries(path: Path) -> None:
+    """`shutil.rmtree`, tolerant of the same transient Windows/OneDrive
+    PermissionError `atomic_write` above already retries around -- observed
+    live deleting a project directory right after a request that had just
+    written to a file inside it (OneDrive's sync agent transiently held
+    `.design/<project>/review/approvals`)."""
+    for attempt in range(6):
+        try:
+            shutil.rmtree(path, onexc=_clear_readonly_and_retry)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.1 * (attempt + 1))
 
 
 DEFAULT_PROJECT_ID = "default"
@@ -397,6 +424,27 @@ class ProjectRegistry:
             index.append({"id": project_id, "name": name})
             atomic_write(self.index_path, yaml.safe_dump(index, sort_keys=False))
         return {"id": project_id, "name": name}
+
+    def rename_project(self, project_id: str, name: str) -> dict[str, str]:
+        if not (self.projects_root / project_id).exists():
+            raise FileNotFoundError(f"project not found: {project_id}")
+        index = self._load_index()
+        for entry in index:
+            if entry["id"] == project_id:
+                entry["name"] = name
+                break
+        else:
+            index.append({"id": project_id, "name": name})
+        atomic_write(self.index_path, yaml.safe_dump(index, sort_keys=False))
+        return {"id": project_id, "name": name}
+
+    def delete_project(self, project_id: str) -> None:
+        project_dir = self.projects_root / project_id
+        if not project_dir.exists():
+            raise FileNotFoundError(f"project not found: {project_id}")
+        index = [entry for entry in self._load_index() if entry["id"] != project_id]
+        atomic_write(self.index_path, yaml.safe_dump(index, sort_keys=False))
+        rmtree_with_retries(project_dir)
 
     def _load_index(self) -> list[dict[str, str]]:
         if not self.index_path.exists():

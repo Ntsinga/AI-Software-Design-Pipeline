@@ -73,6 +73,58 @@ def test_invalid_artifact_transition_is_rejected(runtime):
         runtime.store.artifacts.update_status("demo", ArtifactStatus.GENERATING)
 
 
+def test_registry_rename_and_delete_project(tmp_path, monkeypatch):
+    """delete_project clears every project-scoped table, not just
+    `projects` itself -- exercised here for real (artifacts, comments,
+    approvals, dependency_graph, project_state, project_config,
+    execution_events all get real rows first) rather than trusting the
+    table list is right by inspection alone."""
+    from design_pipeline.runtime import RuntimeRegistry
+
+    engine = build_engine(TEST_DATABASE_URL)
+    db_metadata.drop_all(engine, checkfirst=True)
+    monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    registry = RuntimeRegistry(tmp_path)
+    entry = registry.create_project("Reg Test")
+    project_id = entry["id"]
+
+    renamed = registry.rename_project(project_id, "Renamed")
+    assert renamed == {"id": project_id, "name": "Renamed"}
+    assert {p["id"]: p["name"] for p in registry.list_projects()}[project_id] == "Renamed"
+
+    runtime = registry.for_project(project_id)
+    runtime.store.artifacts.save("demo", "demo", {"v": 1}, generated_by={"agent": "stub"})
+    runtime.add_comment("demo", "a note")
+    runtime.approve("demo")
+    design_dir = tmp_path / ".design" / project_id
+    assert design_dir.exists()
+
+    registry.delete_project(project_id)
+
+    assert project_id not in {p["id"] for p in registry.list_projects()}
+    assert not design_dir.exists()
+    # The cache was invalidated -- for_project builds a genuinely fresh
+    # DesignRuntime, which correctly reports the project gone rather than
+    # serving stale in-memory state from before the delete.
+    fresh = registry.for_project(project_id)
+    assert not fresh.store.is_initialized()
+    db_metadata.drop_all(engine, checkfirst=True)
+    engine.dispose()
+
+
+def test_deleting_an_unknown_project_raises(tmp_path, monkeypatch):
+    from design_pipeline.runtime import RuntimeRegistry
+
+    engine = build_engine(TEST_DATABASE_URL)
+    db_metadata.drop_all(engine, checkfirst=True)
+    monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    registry = RuntimeRegistry(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        registry.delete_project("does-not-exist")
+    db_metadata.drop_all(engine, checkfirst=True)
+    engine.dispose()
+
+
 def test_state_survives_a_fresh_store_instance(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
     first = DesignRuntime(tmp_path)

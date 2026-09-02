@@ -29,7 +29,13 @@ from .models import (
     WorkflowStatus,
     utc_now,
 )
-from .storage import DEFAULT_PROJECT_ID, atomic_write, build_project_registry, build_project_store
+from .storage import (
+    DEFAULT_PROJECT_ID,
+    atomic_write,
+    build_project_registry,
+    build_project_store,
+    rmtree_with_retries,
+)
 from .provider_config import load_mermaid_api_key, load_provider_settings, update_provider
 from .providers import ProviderRequest, create_model_provider
 from .tools.registry import resolve_tools
@@ -1479,6 +1485,28 @@ class RuntimeRegistry:
         runtime = self.for_project(entry["id"])
         runtime.initialize(entry["name"])
         return entry
+
+    def rename_project(self, project_id: str, name: str) -> dict[str, str]:
+        pid = (project_id or DEFAULT_PROJECT_ID).strip().lower()
+        return self._registry.rename_project(pid, name)
+
+    def delete_project(self, project_id: str) -> None:
+        pid = (project_id or DEFAULT_PROJECT_ID).strip().lower()
+        self._registry.delete_project(pid)
+        self.invalidate(pid)
+        # In Postgres mode, `_registry.delete_project` above only clears
+        # database rows -- it has no filesystem root to act on at all. The
+        # local `.design/<project_id>/` directory (agent/workflow YAML,
+        # the staged BRD) exists either way, so it's removed here
+        # unconditionally rather than duplicating this in both registry
+        # backends. A no-op in filesystem mode, where the registry's own
+        # delete_project already removed this same directory.
+        design_dir = self.root / ".design" / pid
+        if design_dir.exists():
+            try:
+                rmtree_with_retries(design_dir)
+            except OSError:
+                pass
 
     def for_project(self, project_id: str) -> DesignRuntime:
         pid = (project_id or DEFAULT_PROJECT_ID).strip().lower()

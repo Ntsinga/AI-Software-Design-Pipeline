@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 
@@ -483,3 +483,25 @@ class PostgresProjectRegistry:
                 .on_conflict_do_nothing(index_elements=["id"])
             )
         return {"id": project_id, "name": name}
+
+    def rename_project(self, project_id: str, name: str) -> dict[str, str]:
+        with self._engine.begin() as conn:
+            result = conn.execute(update(projects).where(projects.c.id == project_id).values(name=name))
+        if result.rowcount == 0:
+            raise FileNotFoundError(f"project not found: {project_id}")
+        return {"id": project_id, "name": name}
+
+    def delete_project(self, project_id: str) -> None:
+        # Every other table is scoped by project_id -- clear all of them
+        # before the projects row itself, in one transaction, so a crash
+        # partway through can't leave orphaned rows under a project_id that
+        # no longer has a `projects` entry at all. Local disk (agent
+        # config, the staged BRD) isn't touched here at all -- this class
+        # has no filesystem root; RuntimeRegistry.delete_project handles
+        # that half unconditionally, on top of calling this.
+        with self._engine.begin() as conn:
+            for table in (artifacts, comments, approvals, tasks, execution_events, project_config, dependency_graph, project_state):
+                conn.execute(delete(table).where(table.c.project_id == project_id))
+            result = conn.execute(delete(projects).where(projects.c.id == project_id))
+        if result.rowcount == 0:
+            raise FileNotFoundError(f"project not found: {project_id}")
