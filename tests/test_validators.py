@@ -278,6 +278,52 @@ def test_no_raw_ids_rendered_is_noop_without_a_spec():
     assert no_raw_ids_rendered_in_html({"mockup-pages": [{"screen_id": "s1", "html": "<h1>x</h1>"}]}, {}) == []
 
 
+def test_no_raw_ids_rendered_accepts_natural_word_entity_ids_used_as_ordinary_copy():
+    """data-model entity names aren't required to be snake_case (unlike
+    workflow ids, which architecture-agent always emits as a snake_case
+    slug) -- a real project named entities "Procedure"/"Report"/"QAIP".
+    Once entity_crud_coverage started reliably requiring entity_id on
+    every CRUD screen, these single-word/acronym ids started failing
+    validation on every retry, forever: a "Report" screen's title can't
+    avoid the word "Report" the way "ia_annual_plan" never needed to
+    appear in "Annual Plan Register". Only the exact parenthetical-suffix
+    shape from the real incident should still be rejected for these."""
+    values = {
+        "mockup-spec": {"screens": [
+            {"id": "s1", "entity_id": "Report"},
+            {"id": "s2", "entity_id": "QAIP"},
+        ]},
+        "mockup-pages": [
+            {"screen_id": "s1", "html": "<h1>Report Library</h1><p>Generate a new report below.</p>"},
+            {"screen_id": "s2", "html": "<h1>QAIP Dashboard</h1>"},
+        ],
+    }
+    assert no_raw_ids_rendered_in_html(values, {}) == []
+
+
+def test_no_raw_ids_rendered_still_rejects_natural_word_id_in_parens():
+    values = {
+        "mockup-spec": {"screens": [{"id": "s1", "entity_id": "Report"}]},
+        "mockup-pages": [{"screen_id": "s1", "html": "<h1>Reports Register (Report)</h1>"}],
+    }
+    errors = no_raw_ids_rendered_in_html(values, {})
+    assert any("Report" in e and "s1" in e for e in errors)
+
+
+def test_no_raw_ids_rendered_rejects_joined_pascalcase_entity_id_anywhere():
+    """Unlike a plain single word, a joined multi-word PascalCase id (a
+    lowercase letter directly followed by an uppercase one) has no
+    natural-English reading -- a human writer would say "Work Paper" or
+    "Workpaper", never type "WorkPaper" verbatim -- so this stays flagged
+    wherever it appears, same as the original snake_case case."""
+    values = {
+        "mockup-spec": {"screens": [{"id": "s1", "entity_id": "WorkPaper"}]},
+        "mockup-pages": [{"screen_id": "s1", "html": "<h1>WorkPaper List</h1>"}],
+    }
+    errors = no_raw_ids_rendered_in_html(values, {})
+    assert any("WorkPaper" in e and "s1" in e for e in errors)
+
+
 def test_no_control_characters_rejects_a_mangled_emoji():
     """Reproduces the live failure: a single-screen retry that should only
     have removed one unrelated button instead came back with its

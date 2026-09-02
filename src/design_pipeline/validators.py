@@ -58,6 +58,30 @@ def no_control_characters_in_html(values: dict[str, Any], inputs: dict[str, Any]
     return errors
 
 
+_SLUG_LIKE_ID_PATTERN = re.compile(r"_|[a-z][A-Z]")
+
+
+def _looks_like_internal_slug(raw_id: str) -> bool:
+    """True for ids that look like a technical identifier no human writer
+    would naturally type verbatim: snake_case (an underscore anywhere,
+    e.g. "ia_annual_plan" -- architecture-model.workflows[].id is always
+    this shape by its own "snake_case slug" constraint) or joined
+    PascalCase/camelCase (a lowercase letter directly followed by an
+    uppercase one, e.g. "WorkPaper", "AuditPlan" -- a human would write
+    "Work Paper"/"Audit Plan" with a space, or "Workpaper" lowercase, not
+    that exact joined capitalization). A plain single English word or
+    short acronym (data-model entity names aren't required to be
+    snake_case, unlike workflow ids -- e.g. "Procedure", "Report", "QAIP")
+    has neither signal and is indistinguishable from the product's own
+    natural vocabulary for that concept: a "Reports" screen legitimately
+    needs to say "Report" somewhere, and banning that outright made
+    validation permanently unsatisfiable for entities named this way
+    (confirmed live: entity_crud_coverage now reliably fills entity_id
+    per-screen, and several of a real project's naturally-named entities
+    immediately started failing this check every retry as a result)."""
+    return bool(_SLUG_LIKE_ID_PATTERN.search(raw_id))
+
+
 def no_raw_ids_rendered_in_html(values: dict[str, Any], inputs: dict[str, Any]) -> list[str]:
     """`entity_id`/`workflow_id` are internal grouping metadata for the
     review workspace's own navigation -- never user-facing product copy.
@@ -65,6 +89,14 @@ def no_raw_ids_rendered_in_html(values: dict[str, Any], inputs: dict[str, Any]) 
     (ia_annual_plan)" literally as an <h1>. Telling it these are
     metadata-only in the prompt wasn't enough on its own -- same "trust
     but verify" pattern as the other mockup validators.
+
+    Slug-like ids (see `_looks_like_internal_slug`) are flagged wherever
+    they appear, matching the original bug. A plain natural-word/acronym
+    id (e.g. "Report", "QAIP") is only flagged in the specific
+    parenthetical-suffix shape the real incident actually looked like --
+    "<title> (<id>)" -- since a blind substring match on those would also
+    reject perfectly natural, unavoidable product copy like "Report
+    Library" or a "QAIP Dashboard" heading.
 
     Handles both generation shapes: the normal mockups step (values has
     both mockup-spec and the full mockup-pages list) and a single-screen
@@ -97,7 +129,8 @@ def no_raw_ids_rendered_in_html(values: dict[str, Any], inputs: dict[str, Any]) 
         screen_id = page.get("screen_id")
         html = page.get("html") or ""
         for raw_id in ids_by_screen.get(screen_id, ()):
-            if raw_id in html:
+            leaked = raw_id in html if _looks_like_internal_slug(raw_id) else re.search(r"\(\s*" + re.escape(raw_id) + r"\s*\)", html)
+            if leaked:
                 errors.append(f"screen '{screen_id}' renders the internal id '{raw_id}' as visible text in its HTML -- entity_id/workflow_id are metadata only, never user-facing copy; remove it from the title/heading/label and write a natural human-facing title instead")
     return errors
 
