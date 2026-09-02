@@ -98,6 +98,15 @@ def no_raw_ids_rendered_in_html(values: dict[str, Any], inputs: dict[str, Any]) 
     reject perfectly natural, unavoidable product copy like "Report
     Library" or a "QAIP Dashboard" heading.
 
+    The error message includes the exact matched fragment plus ~30 chars
+    of surrounding HTML context. Observed live: telling the model only
+    "screen X renders id Y as visible text" wasn't enough for it to find
+    and remove its own parenthetical type-badge across three full-output
+    regeneration retries in a row, for four different natural-word
+    entities at once -- pointing at the literal offending substring gives
+    it something to find-and-delete rather than re-reason about from
+    scratch.
+
     Handles both generation shapes: the normal mockups step (values has
     both mockup-spec and the full mockup-pages list) and a single-screen
     retry (values has one mockup-page-patch; mockup-spec is an upstream
@@ -129,9 +138,17 @@ def no_raw_ids_rendered_in_html(values: dict[str, Any], inputs: dict[str, Any]) 
         screen_id = page.get("screen_id")
         html = page.get("html") or ""
         for raw_id in ids_by_screen.get(screen_id, ()):
-            leaked = raw_id in html if _looks_like_internal_slug(raw_id) else re.search(r"\(\s*" + re.escape(raw_id) + r"\s*\)", html)
-            if leaked:
-                errors.append(f"screen '{screen_id}' renders the internal id '{raw_id}' as visible text in its HTML -- entity_id/workflow_id are metadata only, never user-facing copy; remove it from the title/heading/label and write a natural human-facing title instead")
+            pattern = re.escape(raw_id) if _looks_like_internal_slug(raw_id) else r"\(\s*" + re.escape(raw_id) + r"\s*\)"
+            match = re.search(pattern, html)
+            if match:
+                snippet = html[max(0, match.start() - 30):min(len(html), match.end() + 30)].replace("\n", " ")
+                errors.append(
+                    f"screen '{screen_id}' renders the internal id '{raw_id}' as visible text in its HTML, near: ...{snippet}... -- "
+                    "entity_id/workflow_id are metadata only, never user-facing copy, even when the id is an ordinary word or "
+                    "acronym (e.g. \"Procedure\", \"Report\", \"QAIP\"). Delete that exact fragment -- do not keep it as a "
+                    f"parenthetical type-badge/tag next to the title either (never \"... ({raw_id})\", just the title on its own). "
+                    "Write a natural human-facing title/label instead."
+                )
     return errors
 
 
