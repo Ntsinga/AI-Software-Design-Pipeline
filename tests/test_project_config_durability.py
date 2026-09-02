@@ -91,6 +91,37 @@ def test_a_staged_brd_survives_disk_being_wiped(runtime, tmp_path):
     assert "Some staged content" in brd_path.read_text(encoding="utf-8")
 
 
+def test_a_staged_brd_survives_the_wipe_regardless_of_its_original_filename(runtime, tmp_path):
+    """The test above happens to upload as "BRD.md" -- the exact filename
+    DocumentReader.read_brd() always reads back, on every backend. Every
+    real upload instead keeps its own original name (AuditModule.docx,
+    say) purely for display (staged_brd_filename, used by the UI's source
+    banner and History) -- documents.py's ingest_*() always writes the
+    extracted text to the SAME fixed path, input/BRD.md, regardless.
+    Restoring to a path built from the original filename instead of that
+    fixed name wrote a file read_brd() would never find: self-heal
+    "succeeded" (no exception, brd_path.exists() was even True afterward)
+    while leaving the real document permanently invisible to every live
+    provider call downstream. Root-caused a real production incident this
+    way -- brd kept regenerating a generic "no document uploaded" fallback
+    on every retry, on every fresh deploy, forever, because self-heal
+    never restored where read_brd() would actually look."""
+    runtime.ingest_brd_text("# Business Requirements\n\nAudit plan details.", "AuditModule.md")
+    brd_path = runtime.store.paths.input / "BRD.md"
+    assert brd_path.exists()
+
+    brd_path.unlink()  # simulate the wipe (see the comment above)
+    restarted = DesignRuntime(tmp_path)
+    restarted.workflow()  # any _require_initialized call triggers the restore
+
+    assert brd_path.exists()
+    assert "Audit plan details" in brd_path.read_text(encoding="utf-8")
+    # And the one thing that actually reads it back must find it too.
+    document = restarted._project_inspection_content("test-project").get("staged_document")
+    assert document is not None
+    assert "Audit plan details" in document["text"]
+
+
 def test_provider_selection_survives_local_env_being_wiped(runtime):
     update_provider(runtime.root, "gemini", database_url=runtime._database_url)
     env_path = runtime.root / ".env"

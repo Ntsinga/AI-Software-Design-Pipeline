@@ -224,7 +224,23 @@ class DesignRuntime:
             if not workflow_path.exists():
                 atomic_write(workflow_path, config["workflow_file"])
             if config.get("staged_brd_content"):
-                brd_path = self.store.paths.input / (config.get("staged_brd_filename") or "BRD.md")
+                # Every ingest_brd*() call writes the extracted text to the
+                # SAME fixed path, input/BRD.md, regardless of the original
+                # upload's filename (documents.py's DocumentReader.read_brd()
+                # only ever reads that exact path back) -- staged_brd_filename
+                # is the *original* name (AuditModule.docx, say), kept purely
+                # for display (the source-document banner, History). Restoring
+                # to a path built from that original filename instead of the
+                # fixed "BRD.md" wrote a file read_brd() would never find --
+                # self-heal silently "succeeded" while leaving the real
+                # requirements document permanently invisible to every live
+                # provider call downstream. Root-caused a real incident this
+                # way: brd kept regenerating a generic fallback BRD (the
+                # model's own default for "no document uploaded", per its own
+                # prompt instruction) across every retry, on every fresh
+                # deploy, because self-heal never actually restored where
+                # read_brd() would look.
+                brd_path = self.store.paths.input / "BRD.md"
                 if not brd_path.exists():
                     atomic_write(brd_path, config["staged_brd_content"])
         self._write_defaults()
