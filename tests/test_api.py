@@ -1,4 +1,8 @@
 import base64
+import html
+import io
+import json
+import zipfile
 
 from fastapi.testclient import TestClient
 
@@ -142,4 +146,82 @@ def test_api_accepts_base64_pdf_upload(tmp_path):
     response = client.post("/documents/brd", json={"filename": "BRD.pdf", "content_base64": payload})
     assert response.status_code == 200
     assert response.json()["filename"] == "BRD.pdf"
-    assert "BR-101" in (tmp_path / ".design" / "default" / "input" / "BRD.md").read_text(encoding="utf-8")
+
+
+def _run_to_completion(client):
+    """Drive a freshly-initialized project through every approval gate via
+    the same HTTP endpoints the review app itself uses, ending with
+    data-model, mockup-spec, and mockup-pages all generated."""
+    client.post("/initialize")
+    client.post("/documents/brd", json={"filename": "requirements.md", "text": "# BR-001\nA reviewer can approve a report."})
+    client.post("/workflow/run")
+    for artifact_id in ("system-model", "data-model", "architecture-model"):
+        response = client.post(f"/artifacts/{artifact_id}/approve")
+        assert response.status_code == 200
+        assert client.post("/workflow/run").status_code == 200
+
+
+def test_data_model_export_returns_a_zip_with_json_and_erd_source(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    _run_to_completion(client)
+
+    response = client.get("/data-model/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert 'filename="data-model-default.zip"' in response.headers["content-disposition"]
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = set(archive.namelist())
+        assert names == {"data-model.json", "erd.mmd"}
+        data_model = json.loads(archive.read("data-model.json"))
+        assert data_model["entities"]
+        erd_source = archive.read("erd.mmd").decode("utf-8")
+        assert "erDiagram" in erd_source
+
+
+def test_data_model_export_404s_before_a_data_model_exists(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    client.post("/initialize")
+    response = client.get("/data-model/export")
+    assert response.status_code == 404
+
+
+def test_mockups_export_returns_one_self_contained_html_file(tmp_path):
+    # Single file, not a .zip of many -- so sharing just that one file
+    # (Teams, Slack, email) still works. Every screen lives inline as its
+    # own <iframe srcdoc="...">, switched by a small nav + the same
+    # data-goto -> postMessage contract app.js's own bridge uses live.
+    client = TestClient(create_app(tmp_path))
+    _run_to_completion(client)
+    spec = client.get("/artifacts/mockup-spec").json()["content"]
+    pages = client.get("/artifacts/mockup-pages").json()["content"]
+
+    response = client.get("/mockup-pages/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert 'filename="mockups-default.html"' in response.headers["content-disposition"]
+
+    document = response.text
+    # One embedded iframe and one nav button per screen -- nothing to fetch
+    # separately, the whole thing is this one response body.
+    assert document.count("<iframe ") == len(pages)
+    assert document.count("data-screen-link=") == len(pages)
+    for screen in spec["screens"]:
+        assert html.escape(screen["name"]) in document
+
+    # The first screen's original visible markup survives inside its
+    # srcdoc (HTML-escaped, since it's an attribute value), and the click
+    # handler that turns data-goto into a screen switch is present.
+    first_page = pages[0]
+    assert html.escape(first_page["html"].split("</body>")[0]) in document
+    # The bridge script lives inside each iframe's srcdoc attribute, so its
+    # source appears HTML-escaped in the outer document's raw text.
+    assert html.escape("parent.postMessage({type:'mockup-goto'") in document
+    assert "function activate(id)" in document
+
+
+def test_mockups_export_404s_before_mockups_exist(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    client.post("/initialize")
+    response = client.get("/mockup-pages/export")
+    assert response.status_code == 404

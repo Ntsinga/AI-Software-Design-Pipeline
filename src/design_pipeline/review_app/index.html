@@ -69,7 +69,7 @@
         </section>
 
         <section id="data-model-view" class="view">
-          <div class="section-heading"><div><p class="eyebrow">DATA MODELING</p><h2>Entities, fields &amp; relationships</h2></div><div class="section-actions"><span id="data-model-status" class="status-pill muted"></span><button class="secondary-button hidden" data-stage-approve="data-model" data-stage-label="data model">✅ Approve</button><button class="secondary-button" data-stage-retry="data-model" data-stage-label="data model">🔁 Regenerate data model</button></div></div>
+          <div class="section-heading"><div><p class="eyebrow">DATA MODELING</p><h2>Entities, fields &amp; relationships</h2></div><div class="section-actions"><span id="data-model-status" class="status-pill muted"></span><button class="secondary-button hidden" data-stage-approve="data-model" data-stage-label="data model">✅ Approve</button><button class="secondary-button" data-stage-retry="data-model" data-stage-label="data model">🔁 Regenerate data model</button><button class="secondary-button" id="export-data-model-button" title="Download the data model (JSON) and its ERD (Mermaid source) as a .zip">⬇️ Export</button></div></div>
           <div class="attachments-strip" data-references-strip="data-model"></div>
           <div id="data-model" class="model-layout empty-state">Approve the system model to generate the data model.</div>
         </section>
@@ -81,7 +81,7 @@
         </section>
 
         <section id="mockups-view" class="view">
-          <div class="section-heading"><div><p class="eyebrow">INTERACTION DESIGN</p><h2>Mockup navigator</h2></div><div class="section-actions"><button class="secondary-button" data-stage-retry="mockup-pages" data-stage-label="mockups">🔁 Regenerate mockups</button></div></div>
+          <div class="section-heading"><div><p class="eyebrow">INTERACTION DESIGN</p><h2>Mockup navigator</h2></div><div class="section-actions"><button class="secondary-button" data-stage-retry="mockup-pages" data-stage-label="mockups">🔁 Regenerate mockups</button><button class="secondary-button" id="export-mockups-button" title="Download every mockup screen as one self-contained, click-through HTML file -- share just this one file, nothing else needed">⬇️ Export</button></div></div>
           <div class="attachments-strip" data-references-strip="mockup"></div>
           <div id="mockup-model" class="model-layout empty-state">Approve the architecture to generate the mockup specification.</div>
         </section>

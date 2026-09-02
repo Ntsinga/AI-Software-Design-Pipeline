@@ -16,6 +16,24 @@ const api = async (path, options = {}) => {
   return response.status === 204 ? null : response.json();
 };
 const titleCase = (value = "") => value.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+// Downloads a file-returning GET endpoint (a .zip export, so far) as a real
+// browser download. Deliberately not a plain `location.href = url` link:
+// on a 404 (e.g. exporting before a data model/mockups exist) that would
+// navigate the whole SPA away to a raw JSON error page instead of just
+// showing a notice -- fetch + blob keeps the app in place either way.
+async function downloadExport(path, fallbackName) {
+  try {
+    const response = await fetch(scopedPath(path));
+    if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.detail || `Export failed (${response.status})`); }
+    const blob = await response.blob();
+    const filename = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "")?.[1] || fallbackName;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = filename;
+    document.body.appendChild(link); link.click(); link.remove();
+    URL.revokeObjectURL(url);
+  } catch (error) { showNotice(error.message, true); }
+}
 // escapeHtml, screenName, screenId, buildScreenList now live in
 // screen_tree.js (loaded before this file) -- pulled out into their own
 // DOM-free module so buildScreenList's navigation-tree logic is unit-
@@ -1166,6 +1184,8 @@ $("#live-run-button").addEventListener("click", async () => {
     button.disabled = false;
   }
 });
+$("#export-data-model-button")?.addEventListener("click", () => downloadExport("/data-model/export", "data-model.zip"));
+$("#export-mockups-button")?.addEventListener("click", () => downloadExport("/mockup-pages/export", "mockups.html"));
 $("#refresh-button").addEventListener("click", refresh); $("#close-dialog").addEventListener("click", () => { state.pendingCommentTarget = null; $("#artifact-dialog").close(); });
 $("#approve-button").addEventListener("click", () => state.selected && action(`/artifacts/${state.selected.metadata.logical_id}/approve`, {}, "Approving artifact..."));
 $("#changes-button").addEventListener("click", () => state.selected && action(`/artifacts/${state.selected.metadata.logical_id}/request-changes`, { note: "Changes requested from the review workspace." }, "Submitting review decision..."));
