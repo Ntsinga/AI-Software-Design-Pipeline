@@ -39,11 +39,12 @@ class ProviderRequest(BaseModel):
     tool_results: dict[str, str] = Field(default_factory=dict)
     # Declared output name -> {"kind": "object"|"array", "schema": <nested
     # dict>|None}, when the caller wants the provider to *enforce* (not
-    # just describe in the prompt) the final JSON answer's shape. Providers
-    # that support native structured output (Gemini's responseSchema,
-    # OpenAI's text.format json_schema) wire this in; providers without an
-    # equivalent (Anthropic) ignore it and fall back to prompt guidance plus
-    # ProviderBackedAgent's post-hoc recovery. `schema`, built by
+    # just describe in the prompt) the final JSON answer's shape. Gemini
+    # wires this into `responseSchema`, OpenAI into `text.format
+    # json_schema`, and Anthropic -- which has no direct equivalent --
+    # into a single tool it forces via `tool_choice`, whose `input_schema`
+    # is this same shape (the standard workaround for structured output on
+    # Claude). `schema`, built by
     # `ProviderBackedAgent._field_schema`, recurses all the way down through
     # nested pydantic models/lists/Optionals with real required properties
     # at every level -- without that, a model can satisfy an unconstrained

@@ -193,13 +193,46 @@ class AnthropicMessagesProvider(_HTTPProvider):
             "temperature": request.temperature,
             "messages": messages,
         }
+        forcing_structured_output = False
         if request.tools:
             body["tools"] = [{"name": tool.name, "description": tool.description, "input_schema": tool.parameters} for tool in request.tools]
+        elif request.response_object_keys:
+            # Anthropic has no OpenAI-`text.format`/Gemini-`responseSchema`
+            # equivalent -- previously this branch did not exist at all, so
+            # Claude got zero native enforcement, only prompt guidance plus
+            # ProviderBackedAgent's post-hoc recovery (weaker than Gemini
+            # and OpenAI already had). The standard workaround: define one
+            # tool whose input_schema IS the desired output shape, then
+            # force the model to call it via tool_choice -- Claude then has
+            # to produce arguments matching the schema to call the tool at
+            # all, the same real enforcement the other two providers get.
+            forcing_structured_output = True
+            body["tools"] = [{
+                "name": "emit_output",
+                "description": "Call this with your final answer, matching the given schema exactly.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {name: _object_schema_for(shape, upper=False) for name, shape in request.response_object_keys.items()},
+                    "required": list(request.response_object_keys),
+                },
+            }]
+            body["tool_choice"] = {"type": "tool", "name": "emit_output"}
         payload = self._post_json(self.endpoint, {"x-api-key": self.settings.api_key or "", "anthropic-version": "2023-06-01"}, body, "Anthropic")
 
         content = payload.get("content", [])
         tool_calls = [ToolCall(id=block["id"], name=block["name"], arguments=block.get("input") or {}) for block in content if block.get("type") == "tool_use"]
         model_name = payload.get("model", request.model or self.model)
+        if forcing_structured_output:
+            # Not a real pending tool call the caller needs to execute and
+            # continue -- unwrap the forced call's arguments straight into
+            # `.text` as a JSON string, so this looks exactly like every
+            # other provider's final, non-tool-calls structured-output
+            # response to ProviderBackedAgent (which only ever expects a
+            # JSON string in `.text`, never response_object_keys-shaped
+            # tool_calls).
+            if not tool_calls:
+                raise LiveProviderError("Anthropic did not call the forced emit_output tool")
+            return ProviderResponse(text=json.dumps(tool_calls[0].arguments), provider=self.name, model=model_name, usage=self._usage(payload))
         if tool_calls:
             history = messages + [{"role": "assistant", "content": content}]
             return ProviderResponse(provider=self.name, model=model_name, usage=self._usage(payload), tool_calls=tool_calls, history=history)

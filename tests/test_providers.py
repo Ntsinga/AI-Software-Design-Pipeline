@@ -51,6 +51,75 @@ def test_anthropic_messages_adapter_uses_messages_api_headers():
     assert result.usage["output_tokens"] == 2
 
 
+def test_anthropic_enforces_declared_shape_via_a_forced_tool_call():
+    """Anthropic has no responseSchema/text.format equivalent -- previously
+    this meant response_object_keys was silently ignored for Claude
+    entirely, weaker enforcement than Gemini and OpenAI already had. The
+    fix: define one tool whose input_schema is the declared shape and force
+    it via tool_choice; the forced call's arguments come back as `.text`
+    (a JSON string), not as a real pending tool_calls the caller has to
+    execute and continue -- from ProviderBackedAgent's side this must look
+    exactly like Gemini/OpenAI's own final, non-tool-calls response."""
+    def responder(request):
+        body = json.loads(request.content)
+        assert body["tools"] == [{
+            "name": "emit_output",
+            "description": "Call this with your final answer, matching the given schema exactly.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"mockup-page-patch": {
+                    "type": "object",
+                    "properties": {"screen_id": {"type": "string"}, "html": {"type": "string"}},
+                    "required": ["screen_id", "html"],
+                }},
+                "required": ["mockup-page-patch"],
+            },
+        }]
+        assert body["tool_choice"] == {"type": "tool", "name": "emit_output"}
+        return httpx.Response(200, json={
+            "model": "test-model",
+            "content": [{"type": "tool_use", "id": "call1", "name": "emit_output", "input": {"mockup-page-patch": {"screen_id": "s1", "html": "<p>x</p>"}}}],
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+        })
+
+    client = httpx.Client(transport=httpx.MockTransport(responder))
+    provider = AnthropicMessagesProvider(ProviderSettings(provider="anthropic", model="test-model", api_key="secret"), client)
+    shape = {"kind": "object", "schema": {"type": "object", "properties": {"screen_id": {"type": "string"}, "html": {"type": "string"}}, "required": ["screen_id", "html"]}}
+    result = provider.generate(ProviderRequest(user_prompt="hello", response_object_keys={"mockup-page-patch": shape}))
+    assert result.is_final  # not exposed as tool_calls -- agents.py must not try to "execute" our own synthetic tool
+    assert json.loads(result.text) == {"mockup-page-patch": {"screen_id": "s1", "html": "<p>x</p>"}}
+
+
+def test_anthropic_structured_output_omitted_when_tools_are_present():
+    """Same mutual-exclusivity rule as Gemini/OpenAI: a real tool-calling
+    turn (e.g. architecture-agent's mermaid.render) must win over forcing
+    the synthetic emit_output tool -- agents.py never sets both at once,
+    but the provider shouldn't silently do the wrong thing if it did."""
+    def responder(request):
+        body = json.loads(request.content)
+        assert [tool["name"] for tool in body["tools"]] == ["real.tool"]
+        assert "tool_choice" not in body
+        return httpx.Response(200, json={"model": "test-model", "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    client = httpx.Client(transport=httpx.MockTransport(responder))
+    provider = AnthropicMessagesProvider(ProviderSettings(provider="anthropic", model="test-model", api_key="secret"), client)
+    tool_spec = ToolSpec(name="real.tool", description="d", parameters={"type": "object", "properties": {}})
+    shape = {"kind": "object", "schema": None}
+    provider.generate(ProviderRequest(user_prompt="hello", tools=[tool_spec], response_object_keys={"business-model": shape}))
+
+
+def test_anthropic_raises_a_clear_error_if_the_forced_tool_is_not_called():
+    def responder(request):
+        return httpx.Response(200, json={"model": "test-model", "content": [{"type": "text", "text": "I'd rather not"}], "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    client = httpx.Client(transport=httpx.MockTransport(responder))
+    provider = AnthropicMessagesProvider(ProviderSettings(provider="anthropic", model="test-model", api_key="secret"), client)
+    from design_pipeline.providers import LiveProviderError
+    shape = {"kind": "object", "schema": None}
+    with pytest.raises(LiveProviderError, match="emit_output"):
+        provider.generate(ProviderRequest(user_prompt="hello", response_object_keys={"business-model": shape}))
+
+
 def test_project_env_selects_gemini_without_exposing_key(tmp_path):
     (tmp_path / ".env").write_text("DESIGN_PIPELINE_PROVIDER=gemini\nGEMINI_API_KEY=secret\nGEMINI_MODEL=test-model\n", encoding="utf-8")
     settings = load_provider_settings(tmp_path, environ={})
@@ -152,10 +221,20 @@ def test_output_shape_recurses_through_nested_models_lists_and_optionals():
     satisfy the unconstrained inner slots with `{}` the same way it did
     for mockup-page-patch before this went one level deep (confirmed live,
     twice). business-model has one `dict[str, list[str]]` field
-    (responsibilities) that isn't translatable at all -- correctly forfeits
-    the *whole* object to an unconstrained fallback rather than sending a
-    schema that silently drops that one field. architecture-model has no
-    entry in OUTPUT_SCHEMAS at all -- same fallback, simpler reason."""
+    (responsibilities) that isn't translatable at all (no provider's
+    structured-output dialect safely describes "arbitrary string keys" --
+    OpenAI's strict mode rejects additionalProperties with a real schema
+    outright). That field alone now falls back to an unconstrained object;
+    every OTHER field still gets its real schema, and -- being
+    business-model's own top-level fields -- all of them are required
+    regardless of Python's own field.is_required(). This is the actual fix
+    for a real production incident: the OLD "one untranslatable field
+    forfeits the whole object" behavior discarded every field's
+    constraint, and with nothing left in the schema at all, a live model
+    kept returning a bare `{}` for business-model/solution-model/
+    system-model, "generated" with no error. architecture-model has no
+    entry in OUTPUT_SCHEMAS at all -- forfeits for the simpler reason that
+    there's no schema to translate in the first place."""
     assert ProviderBackedAgent._output_shape("mockup-page-patch") == {
         "kind": "object",
         "schema": {"type": "object", "properties": {"screen_id": {"type": "string"}, "html": {"type": "string"}}, "required": ["screen_id", "html"]},
@@ -174,8 +253,35 @@ def test_output_shape_recurses_through_nested_models_lists_and_optionals():
     assert properties["screen"]["required"] == ["id", "name"]  # the rest have defaults
     assert properties["screen"]["properties"]["key_elements"] == {"type": "array", "items": {"type": "string"}}
 
-    assert ProviderBackedAgent._output_shape("business-model") == {"kind": "object", "schema": None}
+    business_shape = ProviderBackedAgent._output_shape("business-model")
+    assert business_shape["kind"] == "object"
+    business_properties = business_shape["schema"]["properties"]
+    assert set(business_properties) == {
+        "actors", "stakeholders", "capabilities", "goals", "processes", "rules",
+        "outcomes", "responsibilities", "external_organizations", "events",
+    }
+    # Every field except the untranslatable dict one gets a real, typed
+    # schema (not the permissive object fallback) --
+    assert business_properties["actors"] == {"type": "array", "items": {"type": "string"}}
+    assert business_properties["responsibilities"] == {"type": "object", "properties": {}, "required": []}
+    # -- and ALL of them, including responsibilities, are required: this is
+    # what actually stops an empty `{}` from validating. Before this fix,
+    # `required` was `[]` for every field here (all nine had Python-side
+    # defaults) even on the rare occasion the whole object wasn't `None`.
+    assert set(business_shape["schema"]["required"]) == set(business_properties)
+
     assert ProviderBackedAgent._output_shape("architecture-model") == {"kind": "object", "schema": None}
+
+
+def test_brd_output_shape_is_a_plain_string_not_an_unconstrained_object():
+    """brd has no OUTPUT_SCHEMAS entry (it's markdown prose -- see
+    DeterministicAgent._requirements, which assigns it a raw string), but
+    _output_shape's schema-less fallback defaults to "unconstrained
+    object" -- telling a live model, via its own native structured-output
+    enforcement, that brd's value MUST be a JSON object was a real,
+    confirmed-live bug: asked for prose but constrained to an object type,
+    models kept resolving the conflict as an empty `{}`."""
+    assert ProviderBackedAgent._output_shape("brd") == {"kind": "object", "schema": {"type": "string"}}
 
 
 def test_gemini_enforces_declared_keys_and_flat_fields_via_native_response_schema():

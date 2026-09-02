@@ -358,16 +358,21 @@ class ProviderBackedAgent:
 
     _PRIMITIVE_JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
+    @staticmethod
+    def _is_optional_annotation(annotation: Any) -> bool:
+        origin = get_origin(annotation)
+        return (origin is Union or origin is types.UnionType) and type(None) in get_args(annotation)
+
     @classmethod
-    def _field_schema(cls, annotation: Any) -> dict[str, Any] | None:
+    def _field_schema(cls, annotation: Any, *, top_level: bool = False) -> dict[str, Any] | None:
         """Recursively build a provider-neutral, lowercase-typed JSON-Schema
         dict (`{"type": "object", "properties": {...}, "required": [...]}`,
         `{"type": "array", "items": ...}`, or a bare `{"type": "string"}`
         etc.) for one field's type annotation -- descending into nested
         pydantic models, lists, and `Optional[X]`/`X | None` -- or `None`
-        when the type is too complex to safely translate (a union of
-        several real types, a bare `Any`/`dict`, ...), signalling the
-        caller to fall back to an unconstrained object for that spot.
+        when the type is too complex to safely translate at all (a union of
+        several real types, a bare `Any`, ...), signalling the caller to
+        fall back to an unconstrained object for that spot.
 
         Never emits `$defs`/`$ref`: everything is inlined in place instead,
         because Gemini's structured-output schema subset doesn't reliably
@@ -378,7 +383,22 @@ class ProviderBackedAgent:
         `{}` for it the same way it once did for mockup-page-patch, because
         depth 1 left those nested objects just as unconstrained as no
         schema at all. This recurses all the way down instead.
-        """
+
+        `top_level=True` (set only by `_output_shape`'s own top call, never
+        by the recursive calls below) additionally requires every one of
+        *this* object's own fields unless the field is genuinely nullable
+        (`Optional[X]`/`X | None` -- `None` is then a real, valid value).
+        Plain `field.is_required()` (Python's "must this be passed to
+        construct the model") is the wrong test for what a *generation*
+        output needs: business-model, solution-model, and system-model are
+        built entirely from `list[str]`/`dict[str, ...]` fields with
+        `default_factory` for Python-side convenience, so every one of
+        them is "not required" by that measure -- an entirely empty `{}`
+        response satisfied their schema (confirmed live: all three came
+        back as `{}`, "generated" with no error, repeatedly). One level
+        down, nested objects keep their own field.is_required() semantics
+        as before (e.g. mockup-screen-addition's own MockupScreen leaves
+        purpose/key_elements/etc. genuinely skippable, deliberately)."""
         if annotation in cls._PRIMITIVE_JSON_TYPES:
             return {"type": cls._PRIMITIVE_JSON_TYPES[annotation]}
         origin = get_origin(annotation)
@@ -389,8 +409,9 @@ class ProviderBackedAgent:
         if origin is Union or origin is types.UnionType:
             # Optional[X] / X | None: translate the one real type, treating
             # the field as optional at the parent level (handled by the
-            # caller via `field.is_required()`) rather than here. A union
-            # of more than one real type has no safe single translation.
+            # caller via `field.is_required()`/`top_level` below) rather
+            # than here. A union of more than one real type has no safe
+            # single translation.
             real_args = [arg for arg in get_args(annotation) if arg is not type(None)]
             return cls._field_schema(real_args[0]) if len(real_args) == 1 else None
         model_fields = getattr(annotation, "model_fields", None)
@@ -400,24 +421,52 @@ class ProviderBackedAgent:
             for name, field in model_fields.items():
                 sub_schema = cls._field_schema(field.annotation)
                 if sub_schema is None:
-                    return None  # one untranslatable field forfeits the whole nested object
-                properties[name] = sub_schema
-                if field.is_required():
+                    # An untranslatable field (most commonly dict[str, X]:
+                    # no fixed key set, and OpenAI's strict structured-
+                    # output mode rejects additionalProperties with a real
+                    # schema outright -- there's no schema that safely
+                    # describes "arbitrary string keys" across all three
+                    # providers) no longer forfeits the WHOLE object's
+                    # schema down to nothing, the way it used to. That was
+                    # silently discarding every OTHER field's constraint on
+                    # business-model/solution-model/system-model (each has
+                    # exactly one dict field among nine-plus list[str]
+                    # ones), leaving nothing to stop `{}` from validating.
+                    # Left unconstrained (a bare, permissive object) for
+                    # just this one field instead.
+                    properties[name] = {"type": "object", "properties": {}, "required": []}
+                else:
+                    properties[name] = sub_schema
+                if cls._is_optional_annotation(field.annotation):
+                    continue
+                if top_level or field.is_required():
                     required.append(name)
             return {"type": "object", "properties": properties, "required": required}
         return None
+
+    # Declared outputs whose value is meant to be a plain string, not the
+    # "unconstrained object" every other schema-less output defaults to
+    # below. brd is markdown prose (see DeterministicAgent._requirements,
+    # which assigns it a raw string) -- telling a live model, via its own
+    # native structured-output schema, that this value must be a JSON
+    # *object* was a real, confirmed-live production bug: forced to choose
+    # between the schema's declared type and the prose it was asked for,
+    # models kept resolving it as an empty `{}` rather than real text.
+    _STRING_OUTPUTS = {"brd"}
 
     @classmethod
     def _output_shape(cls, output: str) -> dict[str, Any]:
         """The provider-neutral shape hint for one declared output's
         native-structured-output envelope -- see
         `ProviderRequest.response_object_keys` for the full contract."""
+        if output in cls._STRING_OUTPUTS:
+            return {"kind": "object", "schema": {"type": "string"}}
         schema_type = OUTPUT_SCHEMAS.get(output)
         kind = "object"
         model = schema_type
         if get_origin(schema_type) is list:
             kind, model = "array", get_args(schema_type)[0]
-        return {"kind": kind, "schema": cls._field_schema(model) if model is not None else None}
+        return {"kind": kind, "schema": cls._field_schema(model, top_level=True) if model is not None else None}
 
     @staticmethod
     def _recover_declared_keys(values: dict[str, Any], outputs: list[str]) -> dict[str, Any]:
