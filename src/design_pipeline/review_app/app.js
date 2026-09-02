@@ -947,7 +947,30 @@ async function refresh() {
   // into "+ New project" ("Audit Module"). The friendly name lives on the
   // matching entry in state.projects (populated by refreshProjects, which
   // always runs before this), not in /status at all.
-  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-header-name").textContent = state.projects.find((project) => project.id === state.status.project_id)?.name || state.status.project_id || "Project"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); const history = await api("/history"); renderHistoryList(history); renderBrdSource(history); renderBrdStatus(history); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
+  try {
+    // /status already embeds the full artifact list (its own `.status`
+    // property calls the exact same `store.artifacts.list_latest()`
+    // `/artifacts` does) -- fetching /artifacts separately was a second,
+    // fully redundant round trip (network + DB query, both non-trivial
+    // with Render and Neon in different regions) for byte-identical data
+    // on every single page load. Also run /history alongside /status
+    // instead of after it -- neither depends on the other's result, so
+    // there is no reason to pay their round trips one after another.
+    const [status, history] = await Promise.all([api("/status"), api("/history")]);
+    state.status = status;
+    state.artifacts = status.artifacts;
+    $("#project-header-name").textContent = state.projects.find((project) => project.id === state.status.project_id)?.name || state.status.project_id || "Project";
+    setWorkflowStatus(state.status.workflow_status);
+    renderStats();
+    renderArtifacts();
+    ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus);
+    if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider;
+    if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true);
+    renderHistoryList(history);
+    renderBrdSource(history);
+    renderBrdStatus(history);
+    await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]);
+  } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
 }
 async function openArtifact(id) {
   try {

@@ -58,6 +58,58 @@ def test_requirements_step_receives_the_uploaded_document_text(runtime):
     assert "Auditors must approve every finding before closure" in staged["text"]
 
 
+def test_retrying_brd_after_a_fresh_upload_uses_the_new_document_not_a_stale_snapshot(runtime):
+    """`project-inspection` is a live snapshot of whatever's currently
+    staged, taken by the deterministic `inspect-project` step -- but that
+    step only ever runs once per project (its own step status latches
+    COMPLETED and every later run() skips it, same as every other
+    completed step). Before this fix, `project-inspection`'s content was
+    frozen forever at whatever was staged the very first time the
+    project ever ran, so retrying `brd` after a genuinely newer upload
+    still fed the agent the OLD document -- observed live in production
+    as `brd` regenerating byte-identical "no document uploaded"
+    boilerplate across two different models on two separate retries,
+    because `project-inspection` had actually been captured before any
+    document was ever uploaded, hours before the real one arrived."""
+    runtime.ingest_brd_text("# BR-1\nOriginal document content.", "Original.md")
+
+    calls = []
+
+    def spy(agent_id, outputs, inputs, comments=None, instruction=None):
+        calls.append(inputs)
+        return ({o: {} for o in outputs}, {"agent": agent_id, "provider": "stub", "model": "spy"})
+
+    runtime._execute_agent = spy  # type: ignore[assignment]
+    runtime.run()  # completes inspect-project once, against "Original.md"
+    original_inspection_version = runtime.store.artifacts.get("project-inspection").metadata.version
+
+    runtime.ingest_brd_text("# BR-2\nCompletely different, newer document content.", "Newer.md")
+    runtime.retry("brd")
+
+    # project-inspection must have been refreshed (a new version, since
+    # its content genuinely changed), not silently left at the original.
+    refreshed = runtime.store.artifacts.get("project-inspection")
+    assert refreshed.metadata.version > original_inspection_version
+
+    matching = [call for call in calls if "project-inspection" in call]
+    staged = matching[-1]["project-inspection"]["staged_document"]
+    assert "Completely different, newer document content" in staged["text"]
+    assert "Original document content" not in staged["text"]
+
+
+def test_project_inspection_is_not_rewritten_when_nothing_staged_changed(runtime):
+    """The freshness fix above must not turn into a version bump on every
+    single retry/run -- only an actual content change should save a new
+    project-inspection version."""
+    runtime.ingest_brd_text("# BR-1\nContent.", "Original.md")
+    runtime.run()
+    first_version = runtime.store.artifacts.get("project-inspection").metadata.version
+
+    runtime.retry("brd")  # same staged document, nothing changed
+
+    assert runtime.store.artifacts.get("project-inspection").metadata.version == first_version
+
+
 def test_uploaded_brd_lands_under_this_projects_own_input_directory(runtime):
     """A prior bug wrote every project's upload to the same shared,
     non-project-scoped path -- the file this test checks for is exactly

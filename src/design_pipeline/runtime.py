@@ -541,11 +541,54 @@ class DesignRuntime:
             "staged_document": {"filename": document.filename, "text": document.content} if document else None,
         }
 
+    def _refresh_project_inspection(self, project_id: str) -> StoredArtifact:
+        """Recompute `project-inspection` fresh and persist it only if the
+        content actually changed.
+
+        Unlike every other artifact, this one isn't really "generated" --
+        it's a live snapshot of the currently staged BRD document, taken
+        by the deterministic `inspect-project` step. That step runs
+        exactly once (its own step status latches COMPLETED and every
+        later `run()`/`run_step()` call skips it -- see the `continue` on
+        an already-completed step), so its output used to stay frozen at
+        whatever was staged the very first time this project ever ran --
+        forever after, even across many later document re-uploads, even
+        across retrying `brd` itself any number of times.
+        Observed live in production: a project's `brd` kept regenerating
+        byte-identical "no document uploaded" boilerplate across two
+        different models on two separate retries, because
+        `project-inspection` had been captured before any document was
+        uploaded (`staged_document: null`) and nothing ever re-ran
+        `inspect-project` to pick up the real one, uploaded hours later.
+        Called from every place that resolves `project-inspection` as an
+        input (`_load_inputs`, `retry`) instead of trusting the stored
+        artifact, so a fresh upload reaches `brd` generation immediately
+        -- on a plain retry alone, with no full workflow restart needed.
+        """
+        fresh_content = self._project_inspection_content(project_id)
+        try:
+            current = self.store.artifacts.get("project-inspection")
+        except FileNotFoundError:
+            current = None
+        if current is not None and current.content == fresh_content:
+            return current
+        parent_version = current.metadata.version if current is not None else None
+        return self.store.artifacts.save(
+            "project-inspection", "project-inspection", fresh_content,
+            generated_by={"agent": "runtime", "provider": "runtime", "model": "deterministic"},
+            inputs=[], requirements=[], parent_version=parent_version,
+        )
+
     def _load_inputs(self, names: list[str]) -> tuple[dict[str, Any], list[ArtifactReference], list[str]]:
         values: dict[str, Any] = {}
         references: list[ArtifactReference] = []
         requirements: set[str] = set()
         for name in names:
+            if name == "project-inspection":
+                artifact = self._refresh_project_inspection(self.store.load_state().project_id)
+                values[name] = artifact.content
+                references.append(ArtifactReference(logical_id=name, version=artifact.metadata.version))
+                continue
             try:
                 artifact = self.store.artifacts.get(name)
             except FileNotFoundError:
@@ -888,6 +931,11 @@ class DesignRuntime:
         input_refs: list[ArtifactReference] = []
         input_requirements: set[str] = set()
         for input_id in input_ids:
+            if input_id == "project-inspection":
+                upstream = self._refresh_project_inspection(self.store.load_state().project_id)
+                inputs[input_id] = upstream.content
+                input_refs.append(ArtifactReference(logical_id=input_id, version=upstream.metadata.version))
+                continue
             try:
                 upstream = self.store.artifacts.get(input_id)
             except FileNotFoundError:
