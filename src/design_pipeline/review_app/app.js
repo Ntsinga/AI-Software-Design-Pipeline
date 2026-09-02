@@ -871,7 +871,22 @@ async function renderReferencesStrip(stage) {
 function renderHistoryList(history) {
   const target = $("#history-list");
   if (!history.length) return empty(target, "No recorded events yet.");
-  target.className = "history-list"; target.innerHTML = history.slice().reverse().map((event) => `<div class="history-item"><div><strong>${titleCase(event.event_type)}</strong><p>${event.artifact_id || event.step_id || "Project"}</p></div><p>${new Date(event.timestamp).toLocaleString()}</p></div>`).join("");
+  target.className = "history-list"; target.innerHTML = history.slice().reverse().map((event) => `<div class="history-item"><div><strong>${titleCase(event.event_type)}</strong><p>${event.details?.filename || event.artifact_id || event.step_id || "Project"}</p></div><p>${new Date(event.timestamp).toLocaleString()}</p></div>`).join("");
+}
+// The most recently uploaded document's name, shown permanently (unlike
+// renderBrdStatus's banner below, which hides again once that upload is
+// reflected in a generated `brd` artifact). Without this, once the
+// banner's transient window passed there was no way at all -- not here,
+// not in the History tab either (whose entries only ever showed
+// artifact_id/step_id, never details.filename) -- to see which original
+// file a project's requirements actually came from, on reload or after a
+// fresh deployment.
+function renderBrdSource(history) {
+  const el = $("#brd-source");
+  const lastIngest = history.filter((event) => event.event_type === "BRD_INGESTED").at(-1);
+  if (!lastIngest) { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.classList.remove("hidden");
+  el.textContent = `📄 Source document: ${lastIngest.details?.filename || "Document"} (uploaded ${new Date(lastIngest.timestamp).toLocaleString()})`;
 }
 // Uploading a BRD only stages it (see runtime.ingest_brd*) -- it doesn't
 // create an artifact, so there was previously nothing on Overview to show
@@ -907,7 +922,7 @@ async function refresh() {
   // into "+ New project" ("Audit Module"). The friendly name lives on the
   // matching entry in state.projects (populated by refreshProjects, which
   // always runs before this), not in /status at all.
-  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-header-name").textContent = state.projects.find((project) => project.id === state.status.project_id)?.name || state.status.project_id || "Project"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); const history = await api("/history"); renderHistoryList(history); renderBrdStatus(history); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
+  try { state.status = await api("/status"); state.artifacts = await api("/artifacts"); $("#project-header-name").textContent = state.projects.find((project) => project.id === state.status.project_id)?.name || state.status.project_id || "Project"; setWorkflowStatus(state.status.workflow_status); renderStats(); renderArtifacts(); ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus); if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider; if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true); const history = await api("/history"); renderHistoryList(history); renderBrdSource(history); renderBrdStatus(history); await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]); } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
 }
 async function openArtifact(id) {
   try {

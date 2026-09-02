@@ -60,7 +60,7 @@
         <section id="overview-view" class="view">
           <div class="hero-card">
             <div><p class="eyebrow">START WITH REQUIREMENTS</p><h2>Upload a business requirements document</h2><p>Use a Word document (.docx), PDF, Markdown, plain text, or reStructuredText. The pipeline extracts the text as its BRD input, then generates the business, solution, and system models.</p></div>
-            <div class="upload-control"><input id="document-input" type="file" accept=".docx,.pdf,.md,.markdown,.txt,.rst,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small><p id="brd-status" class="brd-status hidden"></p></div>
+            <div class="upload-control"><input id="document-input" type="file" accept=".docx,.pdf,.md,.markdown,.txt,.rst,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small><p id="brd-source" class="brd-status hidden"></p><p id="brd-status" class="brd-status hidden"></p></div>
           </div>
           <div class="stat-grid" id="stats"></div>
           <div class="section-heading"><div><p class="eyebrow">GENERATED ARTIFACTS</p><h2>Design trace</h2></div><div class="section-actions"><button id="live-run-button" class="secondary-button" title="Discard downstream artifacts and regenerate the whole design with the current live provider">🔁 Regenerate whole design</button></div></div>
