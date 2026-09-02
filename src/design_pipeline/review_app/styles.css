@@ -43,6 +43,9 @@ button { cursor:pointer; }
 .project-card:hover { border-color:#93c5fd; transform:translateY(-1px); }
 .project-card-name { font-weight:700; font-size:15px; color:var(--ink); }
 .project-card-id { font-size:12px; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+@keyframes skeleton-pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+.skeleton-card { pointer-events:none; }
+.skeleton-block { display:block; background:#e2e8f0; border-radius:6px; animation:skeleton-pulse 1.3s ease-in-out infinite; }
 .primary-button,.secondary-button,.icon-button { border-radius:8px; border:1px solid transparent; padding:10px 14px; font-weight:700; }
 .primary-button { background:var(--blue); color:var(--white); }.primary-button:hover { background:#1d4ed8; }.secondary-button { background:var(--white); border-color:var(--line); color:var(--ink); }.secondary-button:hover { background:#f8fafc; }.icon-button { background:transparent; font-size:24px; line-height:1; padding:4px 8px; }
 .notice { padding:13px 16px; margin:0 0 22px; border-radius:8px; background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; }.notice.error { background:#fff1f2; color:#9f1239; border-color:#fecdd3; }.notice.loading { background:#eff6ff; color:#1e40af; border-color:#93c5fd; display:flex; align-items:center; gap:10px; }.notice.loading::before { content:""; display:inline-block; width:14px; height:14px; border:2px solid #bfdbfe; border-top-color:#2563eb; border-radius:50%; animation:spin .8s linear infinite; flex-shrink:0; }.hidden { display:none; }

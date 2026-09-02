@@ -49,6 +49,31 @@ const showNotice = (message, error = false, loading = false) => {
 };
 const empty = (target, message) => { target.className = `${target.className.split(" ").filter((name) => name !== "empty-state").join(" ")} empty-state`; target.textContent = message; };
 
+// Skeleton placeholders for the brief window between navigating into a
+// project (or the Projects picker) and its data actually arriving --
+// previously that window showed nothing (Overview: a blank #stats, plus
+// whatever #artifact-cards happened to still say from the last project
+// you were looking at) or a plain "Loading..." string (Projects picker).
+// Deliberately NOT wired into refresh() itself: refresh() also runs
+// after in-place updates (approve, retry, provider switch, upload...)
+// where flashing a full skeleton over already-live data on every click
+// would be worse than the brief staleness it replaces -- only the two
+// "just switched into a project/the picker" call sites seed these, once,
+// right before their fetch.
+const skeletonLine = (height, width, marginTop = 0) => `<span class="skeleton-block" style="height:${height}px;width:${width};${marginTop ? `margin-top:${marginTop}px;` : ""}"></span>`;
+const skeletonCards = (shapeClass, count, lines) => Array.from({ length: count }, () => `<div class="${shapeClass} skeleton-card">${lines.map((line) => skeletonLine(...line)).join("")}</div>`).join("");
+function renderProjectCardsSkeleton() {
+  const grid = $("#project-cards");
+  grid.className = "project-card-grid";
+  grid.innerHTML = skeletonCards("project-card", 3, [[16, "65%"], [11, "40%"]]);
+}
+function renderOverviewSkeleton() {
+  $("#stats").innerHTML = skeletonCards("stat-card", 5, [[12, "55%"], [24, "45%", 9]]);
+  const target = $("#artifact-cards");
+  target.className = "artifact-grid";
+  target.innerHTML = skeletonCards("artifact-card", 6, [[11, "35%"], [18, "70%", 12], [11, "55%", 8], [20, "75px", 14]]);
+}
+
 // Styled replacements for window.confirm / window.prompt so the app never
 // falls back to the browser's native chrome. Both return a Promise:
 // appConfirm -> boolean, appPrompt -> string|null (null on cancel).
@@ -1003,7 +1028,7 @@ async function onHashChange() {
   applyActiveTab(tab, projectId);
   if (projectId !== state.projectId) {
     state.projectId = projectId;
-    if (projectId) await refresh(); else await renderProjectsView();
+    if (projectId) { renderOverviewSkeleton(); await refresh(); } else await renderProjectsView();
   }
 }
 window.addEventListener("hashchange", onHashChange);
@@ -1012,6 +1037,7 @@ async function refreshProjects() {
   try { state.projects = await api("/projects"); } catch (error) { state.projects = []; }
 }
 async function renderProjectsView() {
+  renderProjectCardsSkeleton();
   await refreshProjects();
   const grid = $("#project-cards");
   const cards = state.projects
@@ -1287,7 +1313,7 @@ $("#comment-form").addEventListener("submit", async (event) => {
   const { projectId, tab } = parseHash();
   state.projectId = projectId;
   applyActiveTab(tab, projectId);
-  if (projectId) { await refreshProjects(); await refresh(); }
+  if (projectId) { renderOverviewSkeleton(); await refreshProjects(); await refresh(); }
   else await renderProjectsView();
   updateHash({ projectId, tab });
 })();
