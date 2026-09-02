@@ -250,7 +250,15 @@ def test_output_shape_recurses_through_nested_models_lists_and_optionals():
     assert properties["page"] == {"type": "object", "properties": {"screen_id": {"type": "string"}, "html": {"type": "string"}}, "required": ["screen_id", "html"]}
     assert properties["updated_source_page"] == properties["page"]  # Optional[MockupPage] unwraps to MockupPage's own shape
     assert set(properties["screen"]["properties"]) == {"id", "name", "purpose", "key_elements", "workflow_link", "workflow_id", "entity_id"}
-    assert properties["screen"]["required"] == ["id", "name"]  # the rest have defaults
+    # workflow_id/entity_id are forced into `required` even though neither
+    # has a Python-side is_required() (both default to "") and this object
+    # isn't top_level: every screen needs at least one of them populated
+    # per workflow_id_coverage/entity_crud_coverage in validators.py, and a
+    # live model (Gemini, on a large real project) was confirmed leaving
+    # both blank on obviously-CRUD screens when the schema didn't flag them
+    # as expected at all. purpose/key_elements/workflow_link stay genuinely
+    # optional -- only these two get the special-cased treatment.
+    assert set(properties["screen"]["required"]) == {"id", "name", "workflow_id", "entity_id"}
     assert properties["screen"]["properties"]["key_elements"] == {"type": "array", "items": {"type": "string"}}
 
     business_shape = ProviderBackedAgent._output_shape("business-model")

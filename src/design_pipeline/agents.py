@@ -13,7 +13,7 @@ import yaml
 from pydantic import TypeAdapter
 
 from .documents import DocumentReader
-from .models import AgentDefinition, BusinessModel, Comment, DataModel, Handoff, MockupPage, MockupScreenAddition, MockupSpec, SolutionModel, SystemModel
+from .models import AgentDefinition, BusinessModel, Comment, DataModel, Handoff, MockupPage, MockupScreen, MockupScreenAddition, MockupSpec, SolutionModel, SystemModel
 from .providers import ModelProvider, ProviderRequest
 from .tools.base import Tool
 
@@ -358,6 +358,26 @@ class ProviderBackedAgent:
 
     _PRIMITIVE_JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
+    # Nested-object fields that must be forced into the schema's `required`
+    # list even though they're not `top_level` and have a Python-side
+    # default (so plain `field.is_required()` says False for them). Unlike
+    # MockupScreen's genuinely-skippable purpose/key_elements, workflow_id
+    # and entity_id are validated post-hoc by workflow_id_coverage/
+    # entity_crud_coverage in validators.py -- every screen MUST carry at
+    # least one of the two, or generation fails validation after retries.
+    # Confirmed live on a large (17-entity, 9-workflow) project: Gemini
+    # repeatedly produced obviously-CRUD screen ids (e.g.
+    # "audit_plan_crud_list") while leaving both fields blank, because
+    # nothing in the schema itself flagged them as expected -- prompt
+    # guidance alone (the ux-agent's own "ENTITY CRUD COVERAGE IS
+    # MANDATORY" constraint) wasn't enough to stop it, the same class of
+    # gap `top_level` closed for business-model/solution-model/system-model.
+    # Forcing the key present doesn't stop an empty string outright, but it
+    # measurably improves compliance versus leaving the key fully optional,
+    # and costs nothing for screens that legitimately need only one of the
+    # two (the other stays present as "").
+    _ALWAYS_REQUIRED_FIELDS: dict[Any, set[str]] = {MockupScreen: {"workflow_id", "entity_id"}}
+
     @staticmethod
     def _is_optional_annotation(annotation: Any) -> bool:
         origin = get_origin(annotation)
@@ -437,6 +457,9 @@ class ProviderBackedAgent:
                     properties[name] = {"type": "object", "properties": {}, "required": []}
                 else:
                     properties[name] = sub_schema
+                if name in cls._ALWAYS_REQUIRED_FIELDS.get(annotation, ()):
+                    required.append(name)
+                    continue
                 if cls._is_optional_annotation(field.annotation):
                     continue
                 if top_level or field.is_required():
