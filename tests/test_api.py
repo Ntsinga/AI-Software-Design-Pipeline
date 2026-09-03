@@ -2,12 +2,28 @@ import base64
 import html
 import io
 import json
+import time
 import zipfile
 
 from fastapi.testclient import TestClient
 
 from design_pipeline.api import create_app
 from test_documents import pdf_document_bytes, word_document_bytes
+
+
+def _wait_for_workflow_idle(client, status_path="/status", timeout=5.0):
+    """`/workflow/run` and `/workflow/restart` now kick the run off in a
+    background thread and return as soon as it's underway (see api.py's
+    start_background), instead of blocking until every step finishes --
+    tests that used to read the result straight off the POST response need
+    to poll /status until the background thread is done."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = client.get(status_path).json()
+        if status["workflow_status"] != "running":
+            return status
+        time.sleep(0.05)
+    raise AssertionError(f"workflow on {status_path} did not leave 'running' within {timeout}s")
 
 
 def test_api_uses_shared_runtime(tmp_path):
@@ -23,7 +39,9 @@ def test_api_uses_shared_runtime(tmp_path):
     assert response.status_code == 200
     response = client.post("/workflow/run")
     assert response.status_code == 200
-    assert response.json()["pending_approvals"] == ["system-model"]
+    assert response.json()["status"] == "started"
+    status = _wait_for_workflow_idle(client)
+    assert status["pending_approvals"] == ["system-model"]
     response = client.get("/artifacts")
     assert response.status_code == 200
     assert {item["logical_id"] for item in response.json()} >= {"brd", "system-model"}
@@ -43,6 +61,41 @@ def test_live_restart_requires_a_live_provider(tmp_path):
     assert "live generation is not selected" in response.json()["detail"]
 
 
+def test_second_workflow_run_while_one_is_in_progress_is_rejected(tmp_path, monkeypatch):
+    """The in-memory `_running_projects` guard (api.py's `start_background`)
+    must reject a second `/workflow/run` while the first is still executing
+    in its background thread -- otherwise two threads could mutate the same
+    cached DesignRuntime/state store concurrently."""
+    import threading
+
+    from design_pipeline.runtime import DesignRuntime
+
+    started = threading.Event()
+    release = threading.Event()
+    original_run = DesignRuntime.run
+
+    def slow_run(self, step_id=None):
+        started.set()
+        release.wait(timeout=5)
+        return original_run(self, step_id)
+
+    monkeypatch.setattr(DesignRuntime, "run", slow_run)
+
+    client = TestClient(create_app(tmp_path))
+    client.post("/initialize")
+    client.post("/documents/brd", json={"filename": "requirements.md", "text": "# BR-001\nDo the thing."})
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(client.post, "/workflow/run")
+        assert started.wait(timeout=5)
+        response = client.post("/workflow/run")
+        assert response.status_code == 400
+        assert "already in progress" in response.json()["detail"]
+        release.set()
+        assert first.result(timeout=5).status_code == 200
+
+
 def test_live_provider_failure_on_retry_returns_a_clean_502_not_a_raw_500(tmp_path, monkeypatch):
     """`retry()`, unlike `run()`/`run_step()`, has no internal try/except
     around `_execute_agent` -- a live-provider failure there previously
@@ -51,6 +104,7 @@ def test_live_provider_failure_on_retry_returns_a_clean_502_not_a_raw_500(tmp_pa
     client.post("/initialize")
     client.post("/documents/brd", json={"filename": "requirements.md", "text": "# BR-001\nDo the thing."})
     client.post("/workflow/run")  # produces the stub `brd` artifact, generated_by.agent="requirements-agent"
+    _wait_for_workflow_idle(client)
 
     monkeypatch.setenv("DESIGN_PIPELINE_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "secret")
@@ -212,10 +266,12 @@ def _run_to_completion(client):
     client.post("/initialize")
     client.post("/documents/brd", json={"filename": "requirements.md", "text": "# BR-001\nA reviewer can approve a report."})
     client.post("/workflow/run")
+    _wait_for_workflow_idle(client)
     for artifact_id in ("system-model", "data-model", "architecture-model"):
         response = client.post(f"/artifacts/{artifact_id}/approve")
         assert response.status_code == 200
         assert client.post("/workflow/run").status_code == 200
+        _wait_for_workflow_idle(client)
 
 
 def test_data_model_export_returns_a_zip_with_json_and_erd_source(tmp_path):

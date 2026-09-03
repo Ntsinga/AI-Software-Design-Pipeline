@@ -972,6 +972,30 @@ async function refresh() {
     await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]);
   } catch (error) { setWorkflowStatus("not_started"); showNotice(error.message, true); }
 }
+async function pollWorkflowUntilDone(intervalMs = 3000) {
+  // /workflow/run and /workflow/restart now kick the run off in a background
+  // thread and return immediately (see api.py's start_background) instead of
+  // blocking the request until every step finishes -- a full run can take
+  // several minutes across multiple LLM calls, which Render's edge proxy
+  // times out on, returning a 503 to the browser while the backend keeps
+  // going unaware. Poll /status (already exposes live workflow_status)
+  // until it's no longer "running" instead of waiting on one long request.
+  while (true) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const status = await api("/status");
+    state.status = status;
+    setWorkflowStatus(status.workflow_status);
+    if (status.workflow_status !== "running") break;
+  }
+  await refresh();
+  const finalStatus = state.status.workflow_status;
+  const message = finalStatus === "failed"
+    ? "Workflow failed -- check artifact history for details."
+    : finalStatus === "paused"
+      ? "Workflow paused for approval."
+      : "Workflow completed.";
+  showNotice(message, finalStatus === "failed");
+}
 async function openArtifact(id) {
   try {
     const artifact = await api(`/artifacts/${id}`); state.selected = artifact;
@@ -1267,9 +1291,8 @@ $("#run-button").addEventListener("click", async () => {
   setWorkflowStatus("running");
   try {
     await ensureProject();
-    const report = await api("/workflow/run", { method: "POST" });
-    showNotice(report.message, report.status === "failed");
-    await refresh();
+    await api("/workflow/run", { method: "POST" });
+    await pollWorkflowUntilDone();
   } catch (error) {
     showNotice(error.message, true);
   } finally {
@@ -1288,9 +1311,8 @@ $("#live-run-button").addEventListener("click", async () => {
   setWorkflowStatus("running");
   try {
     await ensureProject();
-    const report = await api("/workflow/restart", { method: "POST" });
-    showNotice(report.message, report.status === "failed");
-    await refresh();
+    await api("/workflow/restart", { method: "POST" });
+    await pollWorkflowUntilDone();
   } catch (error) {
     showNotice(error.message, true);
   } finally {

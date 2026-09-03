@@ -7,7 +7,9 @@ import html
 import io
 import json
 import logging
+import queue
 import re
+import threading
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -168,6 +170,63 @@ def create_app(root: Path | str = "."):
             # error for the caller, not an unhandled 500.
             logger.warning("%s failed: %s", function.__qualname__, exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    # A full workflow run/restart executes every remaining step synchronously
+    # inside runtime.run()/restart_generation() -- each step can be a live LLM
+    # call up to DESIGN_PIPELINE_TIMEOUT_SECONDS, retried up to 3x on
+    # validation failure, across several steps. Blocking the HTTP request on
+    # that (the old behavior) works locally but exceeds Render's edge-proxy
+    # timeout in production: the proxy serves the browser a 503 and drops the
+    # connection while this backend keeps running unaware, later logging a
+    # normal-looking 200 that never reaches the now-disconnected client.
+    # Kick the run off in a background thread instead and let the frontend
+    # poll /status (already exposes live workflow_status) until it's done.
+    _running_projects: set[str] = set()
+    _running_lock = threading.Lock()
+
+    def start_background(project_id: str, fn, *args, grace_period: float = 2.0) -> dict:
+        with _running_lock:
+            if project_id in _running_projects:
+                raise ValueError(f"A workflow run is already in progress for project '{project_id}'")
+            _running_projects.add(project_id)
+
+        # Every run()/restart_generation()/run_step() call starts with a fast,
+        # non-LLM precondition check (initialized? live provider configured?
+        # valid step id?) before doing any slow work. Losing that fast-fail
+        # into the background thread would turn a would-be 400/404/502 into a
+        # misleading 200 "started" -- so give the thread a brief grace period
+        # to hit one of those before treating it as a genuine long-running
+        # start. A run that's still going after this window is reported as
+        # started; the frontend discovers success/failure via /status polling.
+        outcome: queue.Queue = queue.Queue(maxsize=1)
+
+        def _run():
+            try:
+                fn(*args)
+            except Exception as exc:
+                # runtime.run()/run_step() already catch step-level failures
+                # internally and persist WorkflowStatus.FAILED -- this is
+                # only a backstop for anything that escapes that (e.g. a
+                # crash before the step loop even starts, or the fast
+                # precondition check below), so it doesn't vanish silently in
+                # a background thread with no HTTP response left to report it
+                # through.
+                logger.exception("Background workflow run failed for project '%s'", project_id)
+                outcome.put(exc)
+            else:
+                outcome.put(None)
+            finally:
+                with _running_lock:
+                    _running_projects.discard(project_id)
+
+        threading.Thread(target=_run, daemon=True).start()
+        try:
+            error = outcome.get(timeout=grace_period)
+        except queue.Empty:
+            return {"status": "started", "project_id": project_id}
+        if error is not None:
+            raise error
+        return {"status": "started", "project_id": project_id}
 
     def _safe_export_filename(label: str, fallback: str) -> str:
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-")
@@ -591,27 +650,27 @@ window.addEventListener('message',function(e){{
 
     @app.post("/projects/{project_id}/workflow/run")
     def run_workflow_scoped(project_id: str):
-        return call(runtime_for(project_id).run)
+        return call(start_background, project_id, runtime_for(project_id).run)
 
     @app.post("/workflow/run")
     def run_workflow_legacy():
-        return call(runtime_for(DEFAULT_PROJECT_ID).run)
+        return call(start_background, DEFAULT_PROJECT_ID, runtime_for(DEFAULT_PROJECT_ID).run)
 
     @app.post("/projects/{project_id}/workflow/restart")
     def restart_workflow_scoped(project_id: str):
-        return call(runtime_for(project_id).restart_generation)
+        return call(start_background, project_id, runtime_for(project_id).restart_generation)
 
     @app.post("/workflow/restart")
     def restart_workflow_legacy():
-        return call(runtime_for(DEFAULT_PROJECT_ID).restart_generation)
+        return call(start_background, DEFAULT_PROJECT_ID, runtime_for(DEFAULT_PROJECT_ID).restart_generation)
 
     @app.post("/projects/{project_id}/workflow/steps/{step_id}/run")
     def run_step_scoped(project_id: str, step_id: str):
-        return call(runtime_for(project_id).run_step, step_id)
+        return call(start_background, project_id, runtime_for(project_id).run_step, step_id)
 
     @app.post("/workflow/steps/{step_id}/run")
     def run_step_legacy(step_id: str):
-        return call(runtime_for(DEFAULT_PROJECT_ID).run_step, step_id)
+        return call(start_background, DEFAULT_PROJECT_ID, runtime_for(DEFAULT_PROJECT_ID).run_step, step_id)
 
     @app.get("/projects/{project_id}/artifacts")
     def artifacts_scoped(project_id: str):
