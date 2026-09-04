@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
+
+import yaml
+
+_PROVIDER_PREFIX = {"openai": "OPENAI", "anthropic": "ANTHROPIC", "gemini": "GEMINI"}
 
 
 class ProviderConfigurationError(ValueError):
@@ -63,36 +67,125 @@ def _read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def load_provider_settings(root: Path | str, environ: Mapping[str, str] | None = None, database_url: str | None = None) -> ProviderSettings:
-    """Load project `.env`, with real environment variables taking precedence.
+# ---------------------------------------------------------------------------
+# Local settings file: `.design/settings.yaml`
+# ---------------------------------------------------------------------------
+#
+# The active provider and each provider's chosen model are toggled live from
+# the review UI -- that's config that changes routinely while the app runs,
+# not a one-time deploy setting. `.env` stays reserved for things you set
+# once by hand and rarely touch again (API keys, timeouts, token limits);
+# mixing "live app state the UI rewrites on every click" into the same file
+# as secrets was confusing and made `.env` diffs noisy. This file holds
+# exactly that live state instead, e.g.:
+#
+#   provider: openai
+#   models:
+#     openai: gpt-5.4-nano
+#     anthropic: claude-sonnet-5
+#     gemini: gemini-3.5-flash-lite
+#
+# It sits next to the existing `projects.yaml` index (both are "app-managed,
+# not hand-edited" files) rather than inside any one project's own directory,
+# since the active provider/model is a deployment-wide setting, same as
+# DESIGN_PIPELINE_PROVIDER always was.
 
-    `database_url`, when given, adds one more fallback layer for just the
-    active provider selection: real env var > the deployment-wide Postgres
-    `app_settings` row > the local `.env` file > "stub". The DB layer exists
-    because `.env` lives on local disk even in Postgres mode -- an operator-
-    set env var always persists (it's part of the platform's own deploy
-    config), but a provider switched via the UI (`update_provider`, which
-    only ever wrote to `.env`) did not survive a redeploy on a host with an
-    ephemeral filesystem (e.g. Render) before this existed.
+def _settings_path(root: Path | str) -> Path:
+    return Path(root) / ".design" / "settings.yaml"
+
+
+def _read_local_settings(root: Path | str) -> dict[str, Any]:
+    path = _settings_path(root)
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _write_local_settings(root: Path | str, settings: dict[str, Any]) -> None:
+    # Deferred import: storage.py imports load_database_url from this module,
+    # so importing storage.atomic_write at module level here would be circular.
+    from .storage import atomic_write
+
+    atomic_write(_settings_path(root), yaml.safe_dump(settings, sort_keys=False))
+
+
+def _migrate_legacy_env_settings_once(root: Path | str, file_values: dict[str, str]) -> dict[str, Any]:
+    """One-time bootstrap for anyone upgrading from before this file existed.
+
+    The very first time `.design/settings.yaml` is missing, seed it from
+    whatever `DESIGN_PIPELINE_PROVIDER` / `*_MODEL` / `DESIGN_PIPELINE_MODEL`
+    lines already sit in `.env`, so switching to this new settings file
+    doesn't silently reset an already-configured provider/model back to
+    "stub". After this seed write, `.env` is never consulted again for
+    these two settings -- only this file (and, for redeploys, Postgres).
     """
-    file_values = _read_dotenv(Path(root) / ".env")
+    path = _settings_path(root)
+    if path.exists():
+        return _read_local_settings(root)
+    settings: dict[str, Any] = {}
+    provider = file_values.get("DESIGN_PIPELINE_PROVIDER", "").strip().lower()
+    if provider in {"stub", "openai", "anthropic", "gemini"}:
+        settings["provider"] = provider
+    global_model = file_values.get("DESIGN_PIPELINE_MODEL", "").strip()
+    models: dict[str, str] = {}
+    for name, prefix in _PROVIDER_PREFIX.items():
+        model = file_values.get(f"{prefix}_MODEL", "").strip()
+        if not model and name == provider and global_model:
+            # DESIGN_PIPELINE_MODEL used to be a cross-provider override; the
+            # new per-provider `models` map has no equivalent, so the one-time
+            # migration folds it into whichever provider was actually active.
+            model = global_model
+        if model:
+            models[name] = model
+    if models:
+        settings["models"] = models
+    if settings:
+        _write_local_settings(root, settings)
+    return settings
+
+
+def load_provider_settings(root: Path | str, environ: Mapping[str, str] | None = None, database_url: str | None = None) -> ProviderSettings:
+    """Load the active provider/model plus API keys and tuning knobs.
+
+    Provider and model resolve from (highest precedence first): a real
+    process environment variable > `.design/settings.yaml` (the live
+    selection the review UI toggles) > the deployment-wide Postgres
+    `app_settings` row, when `database_url` is given (restores the setting
+    after an ephemeral-disk redeploy wiped the local file, e.g. Render) >
+    default ("stub" / unset). `.env` is intentionally NOT part of this
+    chain -- see the module docstring above `_settings_path`.
+
+    Everything else (API keys, output-token/timeout/tool-iteration limits)
+    is unrelated to this live-toggle concern and still reads from real env
+    vars with `.env` as the local fallback, exactly as before.
+    """
+    root = Path(root)
+    file_values = _read_dotenv(root / ".env")
     environment = os.environ if environ is None else environ
-    if database_url and "DESIGN_PIPELINE_PROVIDER" not in environment and "DESIGN_PIPELINE_PROVIDER" not in file_values:
+    settings = _migrate_legacy_env_settings_once(root, file_values)
+
+    if database_url and "DESIGN_PIPELINE_PROVIDER" not in environment and not settings.get("provider"):
         db_provider = _db_get_provider(database_url)
         if db_provider:
-            file_values["DESIGN_PIPELINE_PROVIDER"] = db_provider
+            settings["provider"] = db_provider
 
-    def value(name: str, default: str = "") -> str:
-        return environment.get(name, file_values.get(name, default)).strip()
-
-    provider = value("DESIGN_PIPELINE_PROVIDER", "stub").lower()
+    provider = environment.get("DESIGN_PIPELINE_PROVIDER", settings.get("provider") or "stub").strip().lower()
     if provider not in {"stub", "openai", "anthropic", "gemini"}:
         raise ProviderConfigurationError("DESIGN_PIPELINE_PROVIDER must be stub, openai, anthropic, or gemini")
     if provider == "stub":
         return ProviderSettings()
 
-    prefix = {"openai": "OPENAI", "anthropic": "ANTHROPIC", "gemini": "GEMINI"}[provider]
-    model = value("DESIGN_PIPELINE_MODEL") or value(f"{prefix}_MODEL")
+    prefix = _PROVIDER_PREFIX[provider]
+    models: dict[str, str] = dict(settings.get("models") or {})
+    if database_url and f"{prefix}_MODEL" not in environment and not models.get(provider):
+        db_model = _db_get_model(database_url, provider)
+        if db_model:
+            models[provider] = db_model
+    model = environment.get(f"{prefix}_MODEL", models.get(provider, "")).strip()
+
+    def value(name: str, default: str = "") -> str:
+        return environment.get(name, file_values.get(name, default)).strip()
+
     api_key = value(f"{prefix}_API_KEY") or None
     try:
         max_output_tokens = int(value("DESIGN_PIPELINE_MAX_OUTPUT_TOKENS", "16000"))
@@ -106,30 +199,44 @@ def load_provider_settings(root: Path | str, environ: Mapping[str, str] | None =
 
 
 def update_provider(root: Path | str, provider: str, database_url: str | None = None) -> None:
-    """Rewrite just the `DESIGN_PIPELINE_PROVIDER=` line in the project's
-    `.env`, preserving every other line (comments, keys, ordering). Adds
-    the line if `.env` doesn't have one yet. Keys are never touched here --
-    only which provider is active.
+    """Switch the active provider by updating `.design/settings.yaml`.
 
-    Also persists the selection to Postgres when `database_url` is given
-    (see `load_provider_settings`'s docstring) -- `.env` is still written
-    too, both because it's harmless and because it keeps behavior identical
-    for anyone inspecting the file directly.
+    Preserves whatever model is already recorded per provider. Also
+    persists to Postgres when `database_url` is given, so the selection
+    survives a redeploy on a host with an ephemeral filesystem (e.g.
+    Render) the same way it survives a local restart via the settings file.
     """
     provider = provider.strip().lower()
     if provider not in {"stub", "openai", "anthropic", "gemini"}:
         raise ProviderConfigurationError("DESIGN_PIPELINE_PROVIDER must be stub, openai, anthropic, or gemini")
-    path = Path(root) / ".env"
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    for index, line in enumerate(lines):
-        if line.strip().startswith("DESIGN_PIPELINE_PROVIDER="):
-            lines[index] = f"DESIGN_PIPELINE_PROVIDER={provider}"
-            break
-    else:
-        lines.append(f"DESIGN_PIPELINE_PROVIDER={provider}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    settings = _migrate_legacy_env_settings_once(root, _read_dotenv(Path(root) / ".env"))
+    settings["provider"] = provider
+    _write_local_settings(root, settings)
     if database_url:
         _db_set_provider(database_url, provider)
+
+
+def update_model(root: Path | str, provider: str, model: str, database_url: str | None = None) -> None:
+    """Record the chosen model for one provider in `.design/settings.yaml`.
+
+    Each provider remembers its own model independently, so switching the
+    active provider and switching back doesn't lose either one's choice.
+    Also persists to Postgres when `database_url` is given (see
+    `update_provider`).
+    """
+    provider = provider.strip().lower()
+    if provider not in {"openai", "anthropic", "gemini"}:
+        raise ProviderConfigurationError("provider must be openai, anthropic, or gemini")
+    model = model.strip()
+    if not model:
+        raise ProviderConfigurationError("model must not be empty")
+    settings = _migrate_legacy_env_settings_once(root, _read_dotenv(Path(root) / ".env"))
+    models = dict(settings.get("models") or {})
+    models[provider] = model
+    settings["models"] = models
+    _write_local_settings(root, settings)
+    if database_url:
+        _db_set_model(database_url, provider, model)
 
 
 def _db_get_provider(database_url: str) -> str | None:
@@ -146,6 +253,22 @@ def _db_set_provider(database_url: str, provider: str) -> None:
     except ImportError:
         return  # optional `postgres` extra not installed
     pg_set_app_setting(database_url, "DESIGN_PIPELINE_PROVIDER", provider)
+
+
+def _db_get_model(database_url: str, provider: str) -> str | None:
+    try:
+        from .db.store import pg_get_app_setting
+    except ImportError:
+        return None  # optional `postgres` extra not installed
+    return pg_get_app_setting(database_url, f"{_PROVIDER_PREFIX[provider]}_MODEL")
+
+
+def _db_set_model(database_url: str, provider: str, model: str) -> None:
+    try:
+        from .db.store import pg_set_app_setting
+    except ImportError:
+        return  # optional `postgres` extra not installed
+    pg_set_app_setting(database_url, f"{_PROVIDER_PREFIX[provider]}_MODEL", model)
 
 
 def load_database_url(root: Path | str, environ: Mapping[str, str] | None = None) -> str | None:

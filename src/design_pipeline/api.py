@@ -83,6 +83,11 @@ class ProviderSelection(BaseModel):
     provider: str
 
 
+class ModelSelection(BaseModel):
+    provider: str
+    model: str = Field(min_length=1)
+
+
 class ProjectCreation(BaseModel):
     name: str = Field(min_length=1)
 
@@ -262,7 +267,7 @@ def create_app(root: Path | str = "."):
         # HTML request against an unknown path (never matches one of our
         # real API prefixes), return a blank HTML page instead so the
         # iframe just goes empty. API/JSON callers still get JSON.
-        api_prefixes = ("/projects", "/artifacts", "/documents", "/workflow", "/references", "/design-reference", "/history", "/requirements", "/status", "/provider", "/initialize", "/review-assets", "/mockup-pages", "/system-model", "/data-model")
+        api_prefixes = ("/projects", "/artifacts", "/documents", "/workflow", "/references", "/design-reference", "/history", "/requirements", "/status", "/provider", "/model", "/initialize", "/review-assets", "/mockup-pages", "/system-model", "/data-model")
         wants_html = "text/html" in request.headers.get("accept", "") and not request.url.path.startswith(api_prefixes)
         if exc.status_code == 404 and wants_html:
             return HTMLResponse("", status_code=200)
@@ -342,6 +347,14 @@ def create_app(root: Path | str = "."):
     @app.put("/provider")
     def set_provider_legacy(request: ProviderSelection):
         return call(runtime_for(DEFAULT_PROJECT_ID).set_provider, request.provider)
+
+    @app.put("/projects/{project_id}/model")
+    def set_model_scoped(project_id: str, request: ModelSelection):
+        return call(runtime_for(project_id).set_model, request.provider, request.model)
+
+    @app.put("/model")
+    def set_model_legacy(request: ModelSelection):
+        return call(runtime_for(DEFAULT_PROJECT_ID).set_model, request.provider, request.model)
 
     def _set_design_reference(project_id, request: DesignReferenceRequest):
         runtime = runtime_for(project_id)

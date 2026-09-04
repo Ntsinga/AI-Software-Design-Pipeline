@@ -53,31 +53,31 @@ reasoning agents (requirements, architecture, and UX). The architecture agent
 can additionally call a real Mermaid MCP tool mid-generation (see below) with
 any of these three live providers.
 
-Copy [`.env.example`](.env.example) to `.env` in the project root, then choose
-one provider and fill in its key and model. `.env` is ignored by Git and keys
-remain server-side; the review interface only exposes the provider name and
-model, never the key.
+Copy [`.env.example`](.env.example) to `.env` in the project root and fill in
+the API key for whichever provider(s) you'll use. `.env` is for keys only --
+keys remain server-side and the review interface never exposes them.
 
 ```text
-DESIGN_PIPELINE_PROVIDER=openai
 OPENAI_API_KEY=...
-OPENAI_MODEL=your-available-model
-```
-
-```text
-DESIGN_PIPELINE_PROVIDER=anthropic
 ANTHROPIC_API_KEY=...
-ANTHROPIC_MODEL=your-available-model
-```
-
-```text
-DESIGN_PIPELINE_PROVIDER=gemini
 GEMINI_API_KEY=...
-GEMINI_MODEL=your-available-model
 ```
 
-Restart the API server after editing `.env`. Leave the provider as `stub` to
-use the deterministic offline fixtures used by the test suite.
+**Which provider is active, and which model each one uses, is chosen live
+from the review UI** -- the provider dropdown and the model dropdown next to
+it in the project header -- not by editing `.env`. That selection is stored
+in `.design/settings.yaml` (app-managed, gitignored, not a secret), and each
+provider remembers its own model independently, so switching providers and
+switching back doesn't lose either one's choice. No server restart needed;
+it takes effect on the next request.
+
+Leave the provider on `Stub (deterministic)` to use the offline fixtures the
+test suite also uses -- no key needed.
+
+For anyone scripting against a fixed deployment, a real process environment
+variable still overrides the UI selection: `DESIGN_PIPELINE_PROVIDER` and
+`OPENAI_MODEL` / `ANTHROPIC_MODEL` / `GEMINI_MODEL` (set via your hosting
+platform's env config, not `.env`) win over whatever's toggled in the UI.
 
 After switching to a live provider, use **Regenerate with live AI** in the
 review workspace. This reruns the business, solution, system, architecture,

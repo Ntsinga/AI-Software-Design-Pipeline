@@ -36,7 +36,7 @@ from .storage import (
     build_project_store,
     rmtree_with_retries,
 )
-from .provider_config import load_mermaid_api_key, load_provider_settings, update_provider
+from .provider_config import load_mermaid_api_key, load_provider_settings, update_model, update_provider
 from .providers import ProviderRequest, create_model_provider
 from .tools.registry import resolve_tools
 from .validators import data_model_relationships_reference_known_entities, entity_crud_coverage, no_control_characters_in_html, no_raw_ids_rendered_in_html, workflow_id_coverage
@@ -313,6 +313,18 @@ class DesignRuntime:
         (matches `public_status()`), same as always.
         """
         update_provider(self.root, provider, database_url=self._database_url)
+        return load_provider_settings(self.root, database_url=self._database_url).public_status()
+
+    def set_model(self, provider: str, model: str) -> dict[str, object]:
+        """Record the chosen model for one provider (see `update_model`).
+
+        Only takes effect for a request that's actually using that provider
+        right now -- `api_key` lookup is always keyed off the CURRENTLY
+        active provider's own prefix (`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/
+        `GEMINI_API_KEY`), so recording a model for a provider you aren't
+        currently on can never end up paired with the wrong key.
+        """
+        update_model(self.root, provider, model, database_url=self._database_url)
         return load_provider_settings(self.root, database_url=self._database_url).public_status()
 
     def _design_reference_parent_version(self) -> int | None:

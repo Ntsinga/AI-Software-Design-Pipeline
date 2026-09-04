@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from design_pipeline.agents import AgentLoader, ProviderBackedAgent
-from design_pipeline.provider_config import ProviderConfigurationError, ProviderSettings, load_provider_settings
+from design_pipeline.provider_config import ProviderConfigurationError, ProviderSettings, load_provider_settings, update_model, update_provider
 from design_pipeline.providers import AnthropicMessagesProvider, GeminiProvider, OpenAIResponsesProvider, ProviderRequest, ProviderResponse, ToolSpec
 
 
@@ -14,6 +14,77 @@ def test_project_env_selects_openai_without_exposing_key(tmp_path):
     assert settings.provider == "openai"
     assert settings.public_status() == {"provider": "openai", "model": "test-model", "mode": "live", "configured": True}
     assert "secret" not in str(settings.public_status())
+
+
+def test_update_provider_and_model_write_settings_yaml_not_env(tmp_path):
+    """The live provider/model toggle is app-managed state, not a secret --
+    it belongs in .design/settings.yaml, never rewritten into .env."""
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=secret\n", encoding="utf-8")
+    update_provider(tmp_path, "openai")
+    update_model(tmp_path, "openai", "gpt-5.4-nano")
+    settings = load_provider_settings(tmp_path, environ={})
+    assert settings.provider == "openai"
+    assert settings.model == "gpt-5.4-nano"
+    # .env is untouched -- only the API key line remains.
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == "OPENAI_API_KEY=secret\n"
+    settings_yaml = (tmp_path / ".design" / "settings.yaml").read_text(encoding="utf-8")
+    assert "provider: openai" in settings_yaml
+    assert "gpt-5.4-nano" in settings_yaml
+
+
+def test_each_provider_remembers_its_own_model_independently(tmp_path):
+    update_provider(tmp_path, "openai")
+    update_model(tmp_path, "openai", "gpt-5.4-nano")
+    update_model(tmp_path, "anthropic", "claude-sonnet-5")
+    update_model(tmp_path, "gemini", "gemini-3.5-flash-lite")
+
+    assert load_provider_settings(tmp_path, environ={}).model == "gpt-5.4-nano"
+    update_provider(tmp_path, "anthropic")
+    assert load_provider_settings(tmp_path, environ={}).model == "claude-sonnet-5"
+    update_provider(tmp_path, "gemini")
+    assert load_provider_settings(tmp_path, environ={}).model == "gemini-3.5-flash-lite"
+    # Switching back to openai still has its own model, unaffected by the
+    # other two switches in between.
+    update_provider(tmp_path, "openai")
+    assert load_provider_settings(tmp_path, environ={}).model == "gpt-5.4-nano"
+
+
+def test_legacy_env_provider_and_model_migrate_once_into_settings_yaml(tmp_path):
+    """Anyone upgrading from before .design/settings.yaml existed shouldn't
+    have their already-configured provider/model silently reset to stub."""
+    (tmp_path / ".env").write_text(
+        "DESIGN_PIPELINE_PROVIDER=gemini\nGEMINI_API_KEY=secret\nGEMINI_MODEL=gemini-3.5-flash-lite\nOPENAI_MODEL=gpt-5.4-nano\n",
+        encoding="utf-8",
+    )
+    settings = load_provider_settings(tmp_path, environ={})
+    assert settings.provider == "gemini"
+    assert settings.model == "gemini-3.5-flash-lite"
+    settings_yaml_path = tmp_path / ".design" / "settings.yaml"
+    assert settings_yaml_path.exists()
+    assert "gpt-5.4-nano" in settings_yaml_path.read_text(encoding="utf-8")  # openai's model also carried over
+
+    # The migration only ever runs once: editing .env afterward has no
+    # effect -- .design/settings.yaml is now the sole source of truth.
+    (tmp_path / ".env").write_text("DESIGN_PIPELINE_PROVIDER=openai\nOPENAI_API_KEY=secret\n", encoding="utf-8")
+    assert load_provider_settings(tmp_path, environ={}).provider == "gemini"
+
+
+def test_real_env_var_still_overrides_settings_yaml(tmp_path):
+    """A true process environment variable (e.g. set by the hosting platform)
+    still wins over the toggled selection -- only the .env FILE stopped
+    participating, not a real env var."""
+    update_provider(tmp_path, "openai")
+    update_model(tmp_path, "openai", "gpt-5.4-nano")
+    settings = load_provider_settings(tmp_path, environ={"DESIGN_PIPELINE_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "secret", "ANTHROPIC_MODEL": "claude-opus-5"})
+    assert settings.provider == "anthropic"
+    assert settings.model == "claude-opus-5"
+
+
+def test_update_model_rejects_stub_and_empty_model(tmp_path):
+    with pytest.raises(ProviderConfigurationError):
+        update_model(tmp_path, "stub", "whatever")
+    with pytest.raises(ProviderConfigurationError):
+        update_model(tmp_path, "openai", "   ")
 
 
 def test_live_provider_requires_key_and_model():

@@ -126,14 +126,79 @@ def test_live_provider_failure_on_retry_returns_a_clean_502_not_a_raw_500(tmp_pa
 
 
 def test_provider_can_be_switched_without_touching_keys(tmp_path):
+    # GEMINI_MODEL here is only present to be picked up by the one-time
+    # .env -> .design/settings.yaml migration (see provider_config.py) --
+    # once migrated, further switches never touch .env for this again.
     (tmp_path / ".env").write_text("DESIGN_PIPELINE_PROVIDER=openai\nOPENAI_API_KEY=secret\nGEMINI_API_KEY=gemini-secret\nGEMINI_MODEL=test-gemini-model\n", encoding="utf-8")
     client = TestClient(create_app(tmp_path))
     response = client.put("/provider", json={"provider": "gemini"})
     assert response.status_code == 200
     assert response.json() == {"provider": "gemini", "model": "test-gemini-model", "mode": "live", "configured": True}
+    # The live provider toggle is app-managed state now, not a hand-edited
+    # secret -- it lives in .design/settings.yaml, and .env (secrets only)
+    # is untouched by the switch.
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "DESIGN_PIPELINE_PROVIDER=gemini" in env_text
+    assert "DESIGN_PIPELINE_PROVIDER=openai" in env_text  # untouched -- migration read it, didn't rewrite it
     assert "OPENAI_API_KEY=secret" in env_text  # keys untouched
+    settings_text = (tmp_path / ".design" / "settings.yaml").read_text(encoding="utf-8")
+    assert "provider: gemini" in settings_text
+    assert "test-gemini-model" in settings_text
+
+
+def test_model_can_be_switched_per_provider(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    client.post("/initialize")
+    client.put("/provider", json={"provider": "openai"})
+    response = client.put("/model", json={"provider": "openai", "model": "gpt-5.4-nano"})
+    assert response.status_code == 200
+    assert response.json()["model"] == "gpt-5.4-nano"
+
+    # Recording a model for a DIFFERENT provider must not affect the one
+    # currently active -- each provider remembers its own model.
+    response = client.put("/model", json={"provider": "anthropic", "model": "claude-sonnet-5"})
+    assert response.status_code == 200
+    status = client.get("/status").json()
+    assert status["provider"]["provider"] == "openai"
+    assert status["provider"]["model"] == "gpt-5.4-nano"
+
+    # Switching to anthropic now picks up the model that was recorded for it.
+    client.put("/provider", json={"provider": "anthropic"})
+    status = client.get("/status").json()
+    assert status["provider"]["model"] == "claude-sonnet-5"
+
+
+def test_model_selection_rejects_unknown_provider(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    response = client.put("/model", json={"provider": "stub", "model": "whatever"})
+    assert response.status_code == 400
+
+
+def test_model_selection_rejects_empty_model(tmp_path):
+    client = TestClient(create_app(tmp_path))
+    response = client.put("/model", json={"provider": "openai", "model": "   "})
+    assert response.status_code == 400
+
+
+def test_switching_provider_never_reuses_a_different_providers_api_key(tmp_path):
+    """The API key looked up for a live call is always keyed off whichever
+    provider is CURRENTLY active, via that provider's own {PREFIX}_API_KEY --
+    picking a model for one provider can never leave a stale/mismatched key
+    attached to another."""
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=openai-secret\nANTHROPIC_API_KEY=anthropic-secret\n", encoding="utf-8")
+    client = TestClient(create_app(tmp_path))
+    client.post("/initialize")
+    client.put("/provider", json={"provider": "openai"})
+    client.put("/model", json={"provider": "openai", "model": "gpt-5.4-nano"})
+    client.put("/model", json={"provider": "anthropic", "model": "claude-sonnet-5"})
+    status = client.get("/status").json()
+    assert status["provider"]["provider"] == "openai"
+    assert status["provider"]["configured"] is True  # openai has OPENAI_API_KEY
+
+    client.put("/provider", json={"provider": "anthropic"})
+    status = client.get("/status").json()
+    assert status["provider"]["provider"] == "anthropic"
+    assert status["provider"]["model"] == "claude-sonnet-5"
+    assert status["provider"]["configured"] is True  # anthropic has its OWN key, ANTHROPIC_API_KEY
 
 
 def test_invalid_provider_selection_is_rejected(tmp_path):
