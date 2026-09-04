@@ -83,6 +83,23 @@ class _HTTPProvider:
             response = self._client.post(url, headers=headers, json=body)
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as exc:
+            # A non-2xx's default str() only restates the status code and
+            # URL -- identical whether the response really came from the
+            # provider's own edge or from some intermediary along the way
+            # (a corporate proxy, a CDN, a misconfigured gateway). That
+            # ambiguity is otherwise unanswerable after the fact, once the
+            # actual response is gone and only this message remains in the
+            # artifact history. `Server`/`Via` are the headers most likely
+            # to reveal an intermediary (Google's real edge reports
+            # `Server: Google Frontend`, distinct from any proxy's own
+            # software); the body snippet distinguishes the provider's own
+            # JSON error shape from an intermediary's own error page.
+            r = exc.response
+            server = r.headers.get("server") or "n/a"
+            via = r.headers.get("via") or "n/a"
+            snippet = (r.text or "")[:200].replace("\n", " ") or "n/a"
+            raise LiveProviderError(f"{label} request failed: {exc} [server={server}; via={via}; body={snippet}]") from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise LiveProviderError(f"{label} request failed: {exc}") from exc
 

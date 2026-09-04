@@ -461,6 +461,44 @@ def test_transport_level_failure_becomes_a_clean_live_provider_error():
         provider.generate(ProviderRequest(user_prompt="hello"))
 
 
+def test_non_2xx_error_includes_server_via_and_body_for_proxy_diagnosis(monkeypatch):
+    """A bare 'Server error 503 for url ...' is identical whether the
+    response really came from the provider's own edge or an intermediary
+    (a proxy, a CDN, a misconfigured gateway) along the way -- and once the
+    request is gone, that's the only trace left in the artifact history.
+    Server/Via/body must be captured so a future occurrence is provable
+    instead of guessed."""
+    from design_pipeline.providers import LiveProviderError
+
+    def responder(request):
+        return httpx.Response(503, headers={"server": "Google Frontend", "via": "1.1 google"}, text='{"error": {"code": 503, "message": "overloaded"}}', request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(responder))
+    provider = OpenAIResponsesProvider(ProviderSettings(provider="openai", model="test-model", api_key="secret"), client)
+    with pytest.raises(LiveProviderError) as exc_info:
+        provider.generate(ProviderRequest(user_prompt="hello"))
+    message = str(exc_info.value)
+    assert "server=Google Frontend" in message
+    assert "via=1.1 google" in message
+    assert "overloaded" in message
+
+
+def test_non_2xx_error_handles_missing_headers_and_body_gracefully(monkeypatch):
+    from design_pipeline.providers import LiveProviderError
+
+    def responder(request):
+        return httpx.Response(503, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(responder))
+    provider = OpenAIResponsesProvider(ProviderSettings(provider="openai", model="test-model", api_key="secret"), client)
+    with pytest.raises(LiveProviderError) as exc_info:
+        provider.generate(ProviderRequest(user_prompt="hello"))
+    message = str(exc_info.value)
+    assert "server=n/a" in message
+    assert "via=n/a" in message
+    assert "body=n/a" in message
+
+
 def test_provider_backed_agent_sends_the_exact_schema_for_known_outputs(runtime):
     """Without this, a live model has no way to know what shape e.g.
     'system-model' needs and reliably invents its own -- observed live:
