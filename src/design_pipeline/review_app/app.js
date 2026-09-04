@@ -661,7 +661,7 @@ async function renderMockups() {
   // sandbox="allow-scripts" (deliberately NOT allow-same-origin): model-authored
   // JS runs for local interactivity, but stays fully isolated from this app.
   const toolbar = html
-    ? `<div class="mock-toolbar"><span>${escapeHtml(activeName)}</span><div class="toolbar-buttons"><button class="secondary-button" data-fullscreen-screen title="Open this screen filling the whole page, like the real application">⛶ Full screen</button><button class="secondary-button" data-comment-screen>💬 Comment on screen</button><button class="secondary-button" id="mockup-comment-toggle" data-comment-element>📍 Comment on element</button><button class="secondary-button" data-retry-screen title="Regenerate only this screen -- every other screen stays exactly as-is">🎯 Regenerate this screen</button><button class="secondary-button" data-add-linked-screen title="Add a brand-new screen this one navigates to (e.g. a Create button that should open its own screen, not a modal) -- every other screen stays exactly as-is">➕ Add linked screen</button><button class="secondary-button" data-split-screen title="Move part of this screen (e.g. a hardcoded record's detail) out into its own new linked screen, leaving a genuine list/summary here -- every other screen stays exactly as-is">🔀 Split this screen</button></div></div>`
+    ? `<div class="mock-toolbar"><span>${escapeHtml(activeName)}</span><div class="toolbar-buttons"><button class="secondary-button" data-fullscreen-screen title="Open this screen filling the whole page, like the real application">⛶ Full screen</button><button class="secondary-button" data-comment-screen>💬 Comment on screen</button><button class="secondary-button" id="mockup-comment-toggle" data-comment-element>📍 Comment on element</button><button class="secondary-button" data-retry-screen title="Regenerate only this screen -- every other screen stays exactly as-is">🎯 Regenerate this screen</button><button class="secondary-button" data-add-linked-screen title="Add a brand-new screen this one navigates to (e.g. a Create button that should open its own screen, not a modal) -- every other screen stays exactly as-is">➕ Add linked screen</button><button class="secondary-button" data-split-screen title="Move part of this screen (e.g. a hardcoded record's detail) out into its own new linked screen, leaving a genuine list/summary here -- every other screen stays exactly as-is">🔀 Split this screen</button><button class="secondary-button" data-mockup-chat title="Describe changes across multiple screens in plain language -- the system plans the operations for your confirmation before executing">💬 Chat</button></div></div>`
     : "";
   const frame = html
     ? `<div class="mock-frame-wrap"><iframe class="mock-frame-iframe" title="${escapeHtml(activeName)} mockup" sandbox="allow-scripts" srcdoc="${escapeHtml(html)}"></iframe><div class="mock-pin-layer"></div></div>`
@@ -729,9 +729,113 @@ async function renderMockups() {
       await renderMockups();
     } catch (error) { showNotice(error.message, true); button.innerHTML = originalHtml; button.disabled = false; }
   });
+  target.querySelector("[data-mockup-chat]")?.addEventListener("click", openMockupChat);
   if (html) {
     const iframe = target.querySelector(".mock-frame-iframe");
     iframe.addEventListener("load", () => loadPinsForScreen(activeId));
+  }
+}
+
+// ---- Mockup Chat: plan-first multi-screen changes via free-text -----------
+// The user describes changes across multiple screens; the system plans the
+// needed operations (retry_screen, add_screen, split_screen), shows the plan
+// for confirmation, then executes step by step in the background.
+
+let _chatSessionId = null;
+
+function _chatShowPhase(phase) {
+  for (const id of ["chat-input-phase", "chat-plan-phase", "chat-exec-phase"]) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle("hidden", id !== phase);
+  }
+}
+
+const _OP_LABELS = { retry_screen: "🎯 Retry", add_screen: "➕ Add", split_screen: "🔀 Split" };
+
+function openMockupChat() {
+  _chatSessionId = null;
+  _chatShowPhase("chat-input-phase");
+  const textarea = document.getElementById("chat-instruction");
+  textarea.value = "";
+  const dialog = document.getElementById("mockup-chat-dialog");
+  const planBtn = document.getElementById("chat-plan-btn");
+  const execBtn = document.getElementById("chat-plan-execute");
+
+  // Wire up the "Plan changes" button.
+  const onPlan = async () => {
+    const instruction = textarea.value.trim();
+    if (!instruction) return;
+    planBtn.disabled = true;
+    planBtn.innerHTML = `<span class="btn-spinner"></span> Planning...`;
+    try {
+      const session = await api("/mockup-chat", { method: "POST", body: JSON.stringify({ instruction }) });
+      _chatSessionId = session.session_id;
+      // Render the plan in phase 2.
+      document.getElementById("chat-plan-summary").textContent = session.plan.summary || "";
+      const ol = document.getElementById("chat-plan-steps");
+      ol.innerHTML = session.plan.steps.map((step, i) => {
+        const badge = _OP_LABELS[step.operation] || step.operation;
+        return `<li><strong>${badge}</strong> ${escapeHtml(step.description)}</li>`;
+      }).join("");
+      _chatShowPhase("chat-plan-phase");
+    } catch (error) {
+      showNotice(error.message, true);
+    } finally {
+      planBtn.disabled = false;
+      planBtn.innerHTML = "Plan changes";
+    }
+  };
+  planBtn.onclick = onPlan;
+
+  // Wire up the "Execute plan" button.
+  const onExecute = async () => {
+    if (!_chatSessionId) return;
+    execBtn.disabled = true;
+    execBtn.innerHTML = `<span class="btn-spinner"></span> Starting...`;
+    try {
+      await api(`/mockup-chat/${encodeURIComponent(_chatSessionId)}/execute`, { method: "POST" });
+      // Switch to execution phase and start polling.
+      _chatShowPhase("chat-exec-phase");
+      document.getElementById("chat-exec-close").classList.add("hidden");
+      await _pollMockupChat(_chatSessionId);
+    } catch (error) {
+      showNotice(error.message, true);
+      execBtn.disabled = false;
+      execBtn.innerHTML = "Execute plan";
+    }
+  };
+  execBtn.onclick = onExecute;
+
+  dialog.showModal();
+}
+
+async function _pollMockupChat(sessionId) {
+  const ol = document.getElementById("chat-exec-steps");
+  const closeBtn = document.getElementById("chat-exec-close");
+  while (true) {
+    await new Promise((r) => setTimeout(r, 3000));
+    let session;
+    try { session = await api(`/mockup-chat/${encodeURIComponent(sessionId)}`); }
+    catch (_) { break; }
+    // Render step statuses.
+    ol.innerHTML = session.steps.map((step) => {
+      const badge = _OP_LABELS[step.operation] || step.operation;
+      const icon = step.status === "completed" ? "✅"
+        : step.status === "running" ? `<span class="btn-spinner" style="display:inline-block;width:14px;height:14px"></span>`
+        : step.status === "failed" ? "❌"
+        : "⏳";
+      const err = step.error ? ` <span style="color:var(--danger,#dc2626)">${escapeHtml(step.error)}</span>` : "";
+      const newId = step.new_screen_id ? ` → <em>${escapeHtml(step.new_screen_id)}</em>` : "";
+      return `<li>${icon} <strong>${badge}</strong> ${escapeHtml(step.description)}${newId}${err}</li>`;
+    }).join("");
+    if (session.status !== "executing") {
+      closeBtn.classList.remove("hidden");
+      const ok = session.status === "completed";
+      showNotice(ok ? "All mockup changes applied." : "Mockup chat execution failed -- see details.", !ok);
+      await refresh();
+      await renderMockups();
+      break;
+    }
   }
 }
 

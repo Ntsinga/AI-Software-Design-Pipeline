@@ -119,6 +119,39 @@
       </form>
     </dialog>
 
+    <dialog id="mockup-chat-dialog" class="app-modal mockup-chat-modal">
+      <form method="dialog" class="app-modal-form" style="min-width:420px;max-width:560px">
+        <!-- Phase 1: Instruction input -->
+        <div id="chat-input-phase">
+          <h2 class="app-modal-title">Describe mockup changes</h2>
+          <p class="app-modal-body">Describe changes across multiple screens in plain language. The system will plan the operations and show you for confirmation before executing.</p>
+          <textarea id="chat-instruction" class="app-modal-input" rows="4" placeholder="e.g. Add a 3-screen checkout flow reachable from the product list: cart, shipping form, and payment confirmation." style="display:block;width:100%;resize:vertical;font:inherit;padding:8px;border-radius:6px;border:1px solid var(--border-color,#d1d5db)"></textarea>
+          <div class="app-modal-actions">
+            <button id="chat-cancel" class="secondary-button" type="submit" value="cancel">Cancel</button>
+            <button id="chat-plan-btn" class="primary-button" type="button">Plan changes</button>
+          </div>
+        </div>
+        <!-- Phase 2: Plan review -->
+        <div id="chat-plan-phase" class="hidden">
+          <h2 class="app-modal-title">Planned changes</h2>
+          <p id="chat-plan-summary" class="app-modal-body"></p>
+          <ol id="chat-plan-steps" style="padding-left:1.2em;margin:12px 0;font-size:0.92em;line-height:1.6"></ol>
+          <div class="app-modal-actions">
+            <button id="chat-plan-cancel" class="secondary-button" type="submit" value="cancel">Cancel</button>
+            <button id="chat-plan-execute" class="primary-button" type="button">Execute plan</button>
+          </div>
+        </div>
+        <!-- Phase 3: Execution progress -->
+        <div id="chat-exec-phase" class="hidden">
+          <h2 class="app-modal-title">Executing changes</h2>
+          <ol id="chat-exec-steps" style="padding-left:1.2em;margin:12px 0;font-size:0.92em;line-height:1.6"></ol>
+          <div class="app-modal-actions">
+            <button id="chat-exec-close" class="primary-button hidden" type="submit" value="cancel">Close</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
     <script src="/review-assets/mermaid.min.js"></script>
     <script src="/review-assets/screen_tree.js"></script>
     <script src="/review-assets/app.js"></script>

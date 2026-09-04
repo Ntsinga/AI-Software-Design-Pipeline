@@ -26,6 +26,7 @@ except ImportError as exc:  # pragma: no cover - exercised when optional deps ar
     FastAPI = None  # type: ignore[assignment]
     _fastapi_error = exc
 
+from .mockup_chat import MockupChatSessionStore, execute_mockup_chat, plan_mockup_changes
 from .providers import LiveProviderError
 from .runtime import DesignRuntime, RuntimeRegistry
 from .storage import DEFAULT_PROJECT_ID
@@ -72,6 +73,10 @@ class AddMockupScreenRequest(BaseModel):
 
 class SplitMockupScreenRequest(BaseModel):
     extract_description: str = Field(min_length=1)
+
+
+class MockupChatRequest(BaseModel):
+    instruction: str = Field(min_length=1)
 
 
 class ProviderSelection(BaseModel):
@@ -779,5 +784,65 @@ window.addEventListener('message',function(e){{
     @app.get("/requirements/{requirement_id}/impact")
     def requirement_impact_legacy(requirement_id: str):
         return {"requirement_id": requirement_id, "affected_artifacts": runtime_for(DEFAULT_PROJECT_ID).dependencies(requirement_id)}
+
+    # ---- Mockup Chat (plan → confirm → execute) --------------------------
+    _chat_sessions = MockupChatSessionStore()
+
+    def _do_plan(project_id: str, instruction: str):
+        """Shared implementation for both plan endpoints.  We avoid ``call()``
+        here because it auto-serialises the result via ``model_dump`` and we
+        need the raw ``MockupChatSession`` for the session store."""
+        try:
+            session = plan_mockup_changes(runtime_for(project_id), instruction)
+        except (FileNotFoundError, ValueError) as exc:
+            logger.warning("plan_mockup_changes failed: %s", exc)
+            raise HTTPException(status_code=404 if isinstance(exc, FileNotFoundError) else 400, detail=str(exc)) from exc
+        except LiveProviderError as exc:
+            logger.warning("plan_mockup_changes failed: %s", exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        _chat_sessions.save(session)
+        return session.model_dump(mode="json")
+
+    @app.post("/projects/{project_id}/mockup-chat")
+    def mockup_chat_plan_scoped(project_id: str, request: MockupChatRequest):
+        return _do_plan(project_id, request.instruction)
+
+    @app.post("/mockup-chat")
+    def mockup_chat_plan_legacy(request: MockupChatRequest):
+        return _do_plan(DEFAULT_PROJECT_ID, request.instruction)
+
+    @app.post("/projects/{project_id}/mockup-chat/{session_id}/execute")
+    def mockup_chat_execute_scoped(project_id: str, session_id: str):
+        session = _chat_sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"mockup chat session '{session_id}' not found")
+        if session.project_id != (project_id or DEFAULT_PROJECT_ID).strip().lower():
+            raise HTTPException(status_code=404, detail=f"session '{session_id}' does not belong to project '{project_id}'")
+        if session.status != "planned":
+            raise HTTPException(status_code=400, detail=f"session is '{session.status}', not 'planned'")
+        return call(start_background, project_id, execute_mockup_chat, runtime_for(project_id), session)
+
+    @app.post("/mockup-chat/{session_id}/execute")
+    def mockup_chat_execute_legacy(session_id: str):
+        session = _chat_sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"mockup chat session '{session_id}' not found")
+        if session.status != "planned":
+            raise HTTPException(status_code=400, detail=f"session is '{session.status}', not 'planned'")
+        return call(start_background, DEFAULT_PROJECT_ID, execute_mockup_chat, runtime_for(DEFAULT_PROJECT_ID), session)
+
+    @app.get("/projects/{project_id}/mockup-chat/{session_id}")
+    def mockup_chat_status_scoped(project_id: str, session_id: str):
+        session = _chat_sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"mockup chat session '{session_id}' not found")
+        return session.model_dump(mode="json")
+
+    @app.get("/mockup-chat/{session_id}")
+    def mockup_chat_status_legacy(session_id: str):
+        session = _chat_sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"mockup chat session '{session_id}' not found")
+        return session.model_dump(mode="json")
 
     return app
