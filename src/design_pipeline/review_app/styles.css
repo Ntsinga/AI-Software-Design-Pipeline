@@ -5,8 +5,9 @@ button, input, textarea { font:inherit; }
 button { cursor:pointer; }
 .app-shell { min-height:100vh; display:grid; grid-template-columns:248px minmax(0, 1fr); }
 .sidebar { background:var(--navy); color:#dbeafe; padding:28px 16px; display:flex; flex-direction:column; }
-.brand { display:flex; gap:10px; align-items:center; font-weight:750; color:#fff; padding:0 12px 26px; }
-.brand-mark { width:26px; height:26px; display:grid; place-items:center; background:#1d4ed8; border-radius:8px; }
+.brand { display:flex; gap:10px; align-items:center; font-weight:750; color:#fff; padding:0 12px 24px; }
+.brand-mark { flex-shrink:0; width:28px; height:28px; display:grid; place-items:center; background:#1d4ed8; border-radius:8px; font-size:15px; }
+.brand-name { font-size:15px; line-height:1.22; letter-spacing:-.01em; }
 .sidebar-label,.eyebrow { margin:0; font-size:11px; font-weight:750; letter-spacing:.12em; color:var(--muted); }
 .sidebar-label { color:#91a4c7; padding:0 12px 8px; }
 .nav { display:grid; gap:3px; }
@@ -14,9 +15,9 @@ button { cursor:pointer; }
 .nav-link:hover,.nav-link.active { background:#233b65; color:#fff; }
 .sidebar-footer { margin-top:auto; padding:12px; display:grid; gap:12px; }
 .text-button { color:#c8d7f4; text-align:left; border:0; background:transparent; padding:0; font-size:13px; }
-.main-content { min-width:0; padding:38px clamp(22px, 5vw, 72px) 64px; }
+.main-content { min-width:0; padding:26px clamp(22px, 5vw, 72px) 64px; }
 .topbar,.section-heading,.hero-card,.dialog-header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }
-.topbar { margin-bottom:18px; }.topbar h1 { margin:5px 0 0; font-size:30px; letter-spacing:-.03em; }.topbar-actions,.dialog-actions { display:flex; gap:10px; flex-wrap:wrap; }
+.topbar { margin-bottom:18px; }.topbar.hidden { display:none; }.topbar h1 { margin:5px 0 0; font-size:30px; letter-spacing:-.03em; }.topbar-actions,.dialog-actions { display:flex; gap:10px; flex-wrap:wrap; }
 /* Project-level bar: the active project's own name + run controls, one
    level below the always-pinned app topbar. Hidden entirely on the
    Projects picker (see applyActiveTab in app.js). */
@@ -30,6 +31,9 @@ button { cursor:pointer; }
 .project-header-identity .icon-button { font-size:16px; padding:6px 8px; margin-left:auto; color:var(--muted); }
 .project-header-identity .icon-button:hover { color:#be123c; background:#fff1f2; border-radius:6px; }
 .project-header-actions { display:flex; gap:10px; flex-wrap:wrap; }
+#provider-select { max-width:150px; }
+#model-select { max-width:190px; text-overflow:ellipsis; }
+#model-select:disabled { opacity:.55; cursor:not-allowed; }
 /* Nav: the 6 project-workspace tabs, hidden as a group until a project is
    open. display:contents so they lay out as direct .nav grid items (not
    boxed inside this wrapper) while still toggleable together; the .hidden
@@ -39,10 +43,14 @@ button { cursor:pointer; }
 /* Projects picker: one card per project plus room to grow -- matches
    .artifact-grid's sizing conventions. */
 .project-card-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; }
-.project-card { display:grid; gap:6px; text-align:left; border:1px solid var(--line); background:#fff; border-radius:12px; padding:18px; box-shadow:0 3px 10px rgba(15,23,42,.025); }
-.project-card:hover { border-color:#93c5fd; transform:translateY(-1px); }
+.project-card { position:relative; border:1px solid var(--line); background:#fff; border-radius:12px; box-shadow:0 3px 10px rgba(15,23,42,.025); transition:border-color .12s ease, transform .12s ease, box-shadow .12s ease; }
+.project-card:hover { border-color:#93c5fd; transform:translateY(-1px); box-shadow:0 8px 22px rgba(15,23,42,.09); }
+.project-card-open { display:grid; gap:6px; text-align:left; width:100%; border:0; background:transparent; padding:18px 44px 18px 18px; border-radius:12px; }
 .project-card-name { font-weight:700; font-size:15px; color:var(--ink); }
 .project-card-id { font-size:12px; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.project-card-delete { position:absolute; top:9px; right:9px; width:22px; height:22px; display:grid; place-items:center; border:0; background:transparent; color:#94a3b8; font-size:13px; line-height:1; border-radius:6px; opacity:.55; transition:opacity .12s ease, background .12s ease, color .12s ease; }
+.project-card:hover .project-card-delete { opacity:1; }
+.project-card-delete:hover, .project-card-delete:focus-visible { background:#fef2f2; color:#dc2626; opacity:1; }
 @keyframes skeleton-pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
 .skeleton-card { pointer-events:none; }
 .skeleton-block { display:block; background:#e2e8f0; border-radius:6px; animation:skeleton-pulse 1.3s ease-in-out infinite; }
@@ -101,10 +109,16 @@ button:disabled { opacity:.65; cursor:not-allowed; }
 @media (max-width:850px) { .field-row,.relationship-row,.entity-card-add { grid-template-columns:1fr; } }
 .editable-standalone { min-width:0; }.component-flow { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }.component { padding:12px; min-width:135px; border-radius:9px; background:#eff6ff; border:1px solid #bfdbfe; font-weight:650; font-size:13px; }.arrow { color:#64748b; font-weight:800; }.mockup-layout { display:grid; grid-template-columns:210px minmax(0,1fr); gap:20px; align-items:start; }.screen-list { display:grid; gap:7px; align-content:start; position:sticky; top:16px; max-height:calc(100vh - 40px); overflow-y:auto; padding-right:4px; }.screen-list button { text-align:left; border:1px solid var(--line); background:#fff; padding:10px; border-radius:7px; }.screen-list button.active { border-color:#60a5fa; background:#eff6ff; color:#1d4ed8; }.screen-nest-marker { color:#94a3b8; margin-right:5px; }.mock-frame { min-height:350px; padding:26px; border:8px solid #172554; border-radius:20px; background:#f8fafc; box-shadow:var(--shadow); }.mock-frame header { display:flex; justify-content:space-between; border-bottom:1px solid var(--line); padding-bottom:16px; }.mock-frame h3 { margin:0; }.mock-content { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:26px; }.mock-block { border-radius:8px; min-height:110px; background:#fff; border:1px solid var(--line); padding:14px; }.history-list { display:grid; gap:10px; }.history-item { background:#fff; border:1px solid var(--line); border-radius:9px; padding:14px; display:flex; justify-content:space-between; gap:15px; }.history-item strong { font-size:13px; }.history-item p { margin:4px 0 0; color:var(--muted); font-size:12px; }.artifact-dialog { width:min(840px,calc(100vw - 32px)); max-height:calc(100vh - 40px); border:0; border-radius:14px; padding:24px; box-shadow:0 24px 70px rgba(15,23,42,.3); }.artifact-dialog::backdrop { background:rgba(15,23,42,.5); }.artifact-dialog h2 { margin:4px 0 0; }.meta-row { display:flex; gap:8px; flex-wrap:wrap; margin:16px 0; color:var(--muted); font-size:13px; }.preview-content { background:#0f172a; color:#e2e8f0; padding:16px; border-radius:9px; white-space:pre-wrap; overflow:auto; max-height:300px; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }.dialog-actions { margin:18px 0; }.comment-form { border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:18px 0; margin:18px 0; }.comment-form label { display:block; font-weight:700; margin-bottom:8px; }.comment-form div { display:flex; gap:10px; }.comment-form textarea { flex:1; min-height:70px; border:1px solid var(--line); border-radius:8px; padding:10px; }.version-list { display:flex; gap:8px; flex-wrap:wrap; }.version { border-radius:7px; padding:8px 10px; background:#f1f5f9; font-size:12px; }
 .diagram-block { margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }.diagram-block:first-of-type { margin-top:0; padding-top:0; border-top:0; }.diagram-block h4 { margin:0 0 10px; font-size:13px; }.diagram-block .mermaid { display:flex; justify-content:center; background:#fff; border-radius:9px; padding:10px; overflow:auto; }.diagram-block svg { max-width:100%; height:auto; }
-.mock-frame-iframe { width:100%; min-height:640px; border:8px solid #172554; border-radius:20px; background:#fff; box-shadow:var(--shadow); display:block; }
-.mock-toolbar button { padding:7px 11px; font-size:12px; }
-.mock-toolbar button.active { background:#017E84; color:#fff; border-color:#017E84; }
-.mock-frame-wrap { position:relative; }
+/* Diagram loader: until a .mermaid <pre> becomes an SVG (data-processed),
+   collapse its raw source and show a centered spinner + label. This also
+   shows during the recovery re-render of a diagram that first drew hidden. */
+.mermaid:not([data-processed="true"]) { position:relative; min-height:150px; font-size:0 !important; color:transparent; }
+.mermaid:not([data-processed="true"])::before { content:""; position:absolute; left:50%; top:calc(50% - 22px); transform:translateX(-50%); width:22px; height:22px; border:2.5px solid #dbe4f0; border-top-color:var(--blue); border-radius:50%; animation:spin .8s linear infinite; }
+.mermaid:not([data-processed="true"])::after { content:"Rendering diagram\2026"; position:absolute; left:0; right:0; top:calc(50% + 8px); text-align:center; color:var(--muted); font-size:12.5px; font-weight:650; }
+.mock-frame-iframe { width:100%; min-height:640px; border:8px solid #0f172a; border-radius:22px; background:#fff; box-shadow:0 22px 55px rgba(15,23,42,.17), 0 2px 6px rgba(15,23,42,.08); display:block; }
+/* Background only -- no padding/border here, so the 8px-inset .mock-pin-layer
+   stays perfectly aligned to the iframe's own content box. */
+.mock-frame-wrap { position:relative; border-radius:24px; background:radial-gradient(130% 90% at 50% -10%, #e8eefb 0%, rgba(232,238,251,0) 62%); }
 .mock-pin-layer { position:absolute; inset:8px; pointer-events:none; }
 .mock-pin { position:absolute; transform:translate(-50%,-50%); width:24px; height:24px; border-radius:50% 50% 50% 4px; background:#017E84; color:#fff; border:2px solid #fff; font-size:11px; font-weight:800; display:grid; place-items:center; box-shadow:0 2px 6px rgba(15,23,42,.35); cursor:pointer; pointer-events:auto; }
 .mock-pin:hover { background:#015a5f; }
@@ -150,10 +164,62 @@ button:disabled { opacity:.65; cursor:not-allowed; }
 @keyframes modal-pop { from { transform:translateY(6px) scale(.98); opacity:0; } to { transform:none; opacity:1; } }
 
 /* Mockup preview polish */
-.mock-column { display:grid; gap:12px; align-content:start; }
-.mock-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 16px; background:#fff; border:1px solid var(--line); border-radius:10px; }
-.mock-toolbar > span { font-weight:700; font-size:14px; color:var(--ink); }
-.mock-toolbar .toolbar-buttons { display:flex; gap:8px; }
+.mockup-layout { grid-template-columns:238px minmax(0,1fr); }
+.mock-column { display:grid; gap:14px; align-content:start; }
+
+/* Screen rail (left column) -- premium redesign. These rules come after the
+   base .screen-list button block in source order, so they win. */
+.screen-rail-label { display:flex; align-items:center; gap:7px; margin:2px 4px 10px; font-size:11px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+.screen-rail-label span { font-size:10px; font-weight:800; color:#0f766e; background:#e6f5f4; border-radius:99px; padding:2px 7px; letter-spacing:0; }
+.screen-list { gap:3px; }
+.screen-list button { position:relative; display:flex; align-items:center; border:1px solid transparent; background:transparent; padding:8px 10px; border-radius:8px; font-size:13px; font-weight:650; color:#334155; line-height:1.3; transition:background .12s ease, color .12s ease, border-color .12s ease; }
+.screen-list button:hover { background:#fff; border-color:var(--line); color:var(--ink); box-shadow:0 1px 3px rgba(15,23,42,.05); }
+.screen-list button.active { border-color:#bfdbfe; background:#eff6ff; color:#1d4ed8; font-weight:700; box-shadow:0 2px 10px rgba(37,99,235,.12); }
+/* Child rows (any with a nest marker) read as lighter/secondary than the
+   top-level roots -- hierarchy from typography, not indent alone. */
+.screen-list button[data-depth]:not([data-depth="0"]) { font-weight:600; color:#5b6b82; }
+.screen-list button[data-depth]:not([data-depth="0"]).active { color:#1d4ed8; }
+/* The nest marker is an empty span CSS turns into a small "L" branch tick. */
+.screen-nest-marker { flex-shrink:0; width:9px; height:9px; margin:1px 7px 0 1px; border-left:1.5px solid #cbd5e1; border-bottom:1.5px solid #cbd5e1; border-bottom-left-radius:5px; }
+.screen-list button:hover .screen-nest-marker { border-color:#94a3b8; }
+.screen-list button.active .screen-nest-marker { border-color:#93c5fd; }
+.screen-group-label { margin:16px 0 6px; padding-left:4px; }
+
+/* ---- Premium AI control deck --------------------------------------------
+   A single card with two tiers: a title row (screen identity + passive
+   review actions), and a distinct, softly-tinted AI band that visually
+   elevates the four generative, AI-powered edits. */
+.mock-deck { background:#fff; border:1px solid var(--line); border-radius:14px; box-shadow:0 6px 22px rgba(15,23,42,.06); overflow:hidden; }
+.mock-deck-head { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 18px; }
+.mock-deck-title { display:flex; align-items:baseline; gap:11px; min-width:0; flex-wrap:wrap; }
+.mock-deck-name { font-weight:750; font-size:16px; letter-spacing:-.01em; color:var(--ink); }
+.mock-deck-count { flex-shrink:0; font-size:11px; font-weight:700; color:#475569; background:#f1f5f9; border-radius:99px; padding:3px 9px; }
+.mock-deck-purpose { font-size:13px; color:var(--muted); line-height:1.4; }
+.mock-deck-review { display:flex; gap:6px; flex-shrink:0; }
+.deck-ghost { background:transparent; border:1px solid transparent; border-radius:8px; padding:7px 11px; font-size:12.5px; font-weight:650; color:var(--muted); white-space:nowrap; }
+.deck-ghost:hover { background:#f1f5f9; color:var(--ink); }
+.deck-ghost.active { background:#017E84; border-color:#017E84; color:#fff; }
+.mock-ai-band { display:flex; align-items:center; gap:14px; padding:12px 18px; background:linear-gradient(100deg,#eff6ff 0%,#ecfdf8 100%); border-top:1px solid #e0f2fe; flex-wrap:wrap; }
+.ai-band-label { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:800; letter-spacing:.11em; text-transform:uppercase; color:#0f766e; white-space:nowrap; }
+.ai-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.ai-action { display:inline-flex; align-items:center; gap:6px; background:#fff; border:1px solid #cfe6e6; border-radius:9px; padding:8px 13px; font-size:13px; font-weight:700; color:#0f5f59; box-shadow:0 1px 2px rgba(15,23,42,.05); transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease; }
+.ai-action:hover { transform:translateY(-1px); border-color:#0f766e; box-shadow:0 7px 16px rgba(15,118,110,.18); }
+.ai-action:disabled { transform:none; box-shadow:none; }
+.ai-action-chat { background:linear-gradient(122deg,#0f766e,#2563eb); border-color:transparent; color:#fff; }
+.ai-action-chat:hover { border-color:transparent; box-shadow:0 8px 20px rgba(37,99,235,.3); }
+
+/* Supporting-documents: tucked into a collapsible panel so the screen, not
+   the file list, owns the vertical space. Hide the inner <h4> the shared
+   strip renderer emits -- the <summary> already names the panel. */
+.attachments-panel { border:1px solid var(--line); border-radius:12px; background:#fff; margin-top:18px; box-shadow:0 3px 10px rgba(15,23,42,.025); }
+.attachments-summary { display:flex; align-items:center; gap:10px; padding:13px 16px; font-weight:700; font-size:13.5px; color:var(--ink); cursor:pointer; list-style:none; }
+.attachments-summary::-webkit-details-marker { display:none; }
+.attachments-summary::before { content:"▸"; color:var(--muted); font-size:12px; transition:transform .15s ease; }
+.attachments-panel[open] .attachments-summary::before { transform:rotate(90deg); }
+.attachments-summary-hint { font-weight:500; font-size:12px; color:var(--muted); }
+.attachments-panel .attachments-strip { border:0; border-top:1px solid var(--line); border-radius:0; margin:0; padding:14px 16px; }
+.attachments-panel .attachments-strip h4 { display:none; }
+@media (max-width:600px) { .attachments-summary-hint { display:none; } .mock-deck-purpose { display:none; } }
 #mockup-fullscreen { position:fixed; inset:0; z-index:1000; background:#0f172a; display:flex; flex-direction:column; }
 .fullscreen-mock-bar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:8px 14px; background:#172554; color:#fff; flex:0 0 auto; }
 .fullscreen-mock-bar .fullscreen-mock-title { font-weight:700; font-size:13px; }
@@ -162,9 +228,115 @@ button:disabled { opacity:.65; cursor:not-allowed; }
 .fullscreen-mock-iframe { flex:1 1 auto; width:100%; height:100%; border:0; background:#fff; display:block; }
 .brd-status { margin:2px 0 0; padding:8px 10px; background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.3); border-radius:8px; color:#fff; font-size:12.5px; font-weight:600; line-height:1.4; }
 .mock-comments { background:#fffbeb; border:1px solid #fde68a; border-radius:10px; padding:10px 14px; display:grid; gap:6px; }
+/* This class redefines display after the global .hidden rule, so .hidden
+   would otherwise lose on source order -- restore it explicitly (same
+   pattern as .project-header.hidden / .topbar.hidden). */
+.mock-comments.hidden { display:none; }
 .mock-comments-label { margin:0; font-size:12px; font-weight:700; color:#92400e; }
 .mock-comment-row { display:flex; gap:8px; align-items:baseline; font-size:13px; }
 .mock-comment-scope { flex-shrink:0; color:#92400e; font-size:11px; font-weight:600; white-space:nowrap; }
 .mock-comment-scope code { background:rgba(146,64,14,.1); padding:1px 4px; border-radius:3px; }
 .mock-comment-text { color:var(--ink); }
 @media (max-width:850px) { .app-shell { grid-template-columns:1fr; }.sidebar { min-height:auto; padding:14px; }.nav { grid-template-columns:repeat(5,minmax(0,1fr)); overflow:auto; }.sidebar-label,.sidebar-footer { display:none; }.main-content { padding:26px 18px 48px; }.topbar,.hero-card,.section-heading,.project-header { flex-direction:column; align-items:stretch; }.topbar-actions,.project-header-actions { width:100%; }.stat-grid { grid-template-columns:repeat(2,1fr); }.model-grid,.mockup-layout { grid-template-columns:1fr; }.upload-control { width:100%; }.mock-content { grid-template-columns:1fr; } }
+
+/* ============================================================================
+   Premium polish pass -- shared workspace components (Overview, System model,
+   Data model, Architecture, History). Kept as overrides at the end so they win
+   on source order without touching the dense base rules above. Cohesive with
+   the mockup control deck: softer layered shadows, refined card borders, and a
+   small gradient accent on every panel heading.
+   ========================================================================== */
+.section-heading .eyebrow { color:#0f766e; }
+.section-heading h2 { letter-spacing:-.02em; }
+
+.panel { border-color:#e7edf5; border-radius:14px; box-shadow:0 4px 16px rgba(15,23,42,.05); }
+.panel > h3 { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:750; letter-spacing:.01em; color:var(--ink); }
+.panel > h3::before { content:""; flex-shrink:0; width:3px; height:13px; border-radius:99px; background:linear-gradient(#2563eb,#0f766e); }
+
+/* Overview: stat cards + artifact cards */
+.stat-card { border-color:#e7edf5; border-radius:14px; box-shadow:0 4px 16px rgba(15,23,42,.05); transition:transform .12s ease, box-shadow .12s ease; }
+.stat-card:hover { transform:translateY(-1px); box-shadow:0 10px 24px rgba(15,23,42,.08); }
+.stat-card span { font-weight:600; }
+.artifact-card { border-color:#e7edf5; border-radius:14px; box-shadow:0 4px 16px rgba(15,23,42,.05); transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease; }
+.artifact-card:hover { box-shadow:0 12px 26px rgba(15,23,42,.09); }
+
+/* System model: traceability columns */
+.map-column { border:1px solid rgba(148,163,184,.2); border-radius:11px; }
+.map-column h4 { text-transform:uppercase; letter-spacing:.06em; font-size:10.5px; color:#64748b; }
+
+/* Data model: entity cards */
+.entity-card { border-color:#e7edf5; border-radius:12px; box-shadow:0 3px 12px rgba(15,23,42,.04); }
+
+/* Architecture: component flow chips */
+.component { background:linear-gradient(#eff6ff,#e0f2fe); border-color:#bfdbfe; border-radius:10px; box-shadow:0 2px 6px rgba(37,99,235,.09); }
+.arrow { color:#94a3b8; }
+
+/* History: audit timeline rows */
+.history-item { border-color:#e7edf5; border-radius:11px; box-shadow:0 3px 10px rgba(15,23,42,.035); transition:border-color .12s ease, box-shadow .12s ease; }
+.history-item:hover { border-color:#cbd5e1; box-shadow:0 6px 16px rgba(15,23,42,.06); }
+
+/* ============================================================================
+   Design Trace -- live pipeline DAG. Stage columns of artifact nodes chained
+   left-to-right by SVG connectors, coloured by live state, with approval gates
+   between stages. Node offsets are measured against #artifact-cards (the only
+   positioned ancestor), so .trace-cols/.trace-col stay position:static and the
+   container carries no padding -- that keeps node coordinates and the absolute
+   SVG's origin in the same frame. See drawTraceEdges() in app.js.
+   ========================================================================== */
+.trace-graph { position:relative; padding:0; overflow-x:auto; overflow-y:hidden; border:1px solid var(--line); border-radius:14px; background:linear-gradient(180deg,#fbfdff,#f5f8fc); box-shadow:inset 0 1px 0 #fff; }
+.trace-edges { position:absolute; top:0; left:0; pointer-events:none; overflow:visible; }
+.trace-cols { display:flex; align-items:center; gap:44px; width:max-content; padding:20px 18px; }
+.trace-col { display:flex; flex-direction:column; gap:14px; }
+.trace-col-gate { align-self:center; }
+
+.trace-node { --accent:#94a3b8; --tint:#f1f5f9; position:relative; display:flex; align-items:center; gap:11px; width:174px; text-align:left; background:#fff; border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:11px; padding:11px 13px; box-shadow:0 4px 14px rgba(15,23,42,.06); transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease; }
+.trace-node:not(:disabled):hover { transform:translateY(-2px); box-shadow:0 12px 26px rgba(15,23,42,.13); }
+.trace-node:disabled { opacity:.55; cursor:default; box-shadow:none; }
+.trace-node-icon { flex-shrink:0; width:34px; height:34px; display:grid; place-items:center; font-size:16px; background:var(--tint); border-radius:9px; }
+.trace-node-body { display:grid; gap:2px; min-width:0; }
+.trace-node-title { font-weight:700; font-size:12.5px; color:var(--ink); line-height:1.2; }
+.trace-node-meta { font-size:11px; font-weight:600; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.trace-node.done { --accent:#059669; --tint:#ecfdf5; }
+.trace-node.done .trace-node-meta { color:#047857; }
+.trace-node.review { --accent:#d97706; --tint:#fff7ed; }
+.trace-node.review .trace-node-meta { color:#c2410c; }
+.trace-node.failed { --accent:#dc2626; --tint:#fef2f2; }
+.trace-node.failed .trace-node-meta { color:#dc2626; }
+.trace-node.running { --accent:#2563eb; --tint:#eff6ff; border-color:#bfdbfe; }
+.trace-node.running .trace-node-meta { color:#1d4ed8; }
+.trace-node.running::after { content:""; position:absolute; top:9px; right:10px; width:8px; height:8px; border-radius:50%; background:#2563eb; animation:trace-pulse 1.4s ease-out infinite; }
+@keyframes trace-pulse { 0% { box-shadow:0 0 0 0 rgba(37,99,235,.5); } 70% { box-shadow:0 0 0 7px rgba(37,99,235,0); } 100% { box-shadow:0 0 0 0 rgba(37,99,235,0); } }
+
+.trace-gate { display:flex; flex-direction:column; align-items:center; gap:3px; width:66px; padding:9px 6px; border-radius:10px; background:#f8fafc; border:1px dashed #cbd5e1; color:#94a3b8; }
+.trace-gate-icon { font-size:15px; line-height:1; }
+.trace-gate-label { font-size:9.5px; font-weight:750; letter-spacing:.04em; text-transform:uppercase; }
+.trace-gate.done { background:#ecfdf5; border-color:#6ee7b7; border-style:solid; color:#047857; }
+.trace-gate.review { background:#fff7ed; border-color:#fdba74; border-style:solid; color:#c2410c; }
+.trace-gate.running { background:#eff6ff; border-color:#93c5fd; border-style:solid; color:#1d4ed8; }
+
+.trace-edge { stroke:#d8e0ea; stroke-width:2; }
+.trace-edge.on { stroke:#7fd8bb; }
+.trace-edge.flow { stroke:#93c5fd; stroke-dasharray:5 6; animation:trace-flow .7s linear infinite; }
+@keyframes trace-flow { to { stroke-dashoffset:-11; } }
+
+/* ============================================================================
+   Overview compaction -- the upload hero and the metric strip were eating the
+   whole fold before the Design Trace. Slim both so the trace is the focus.
+   ========================================================================== */
+.hero-card { padding:12px 18px; margin-bottom:16px; align-items:center; gap:16px; }
+.hero-card-info { display:grid; gap:4px; min-width:0; }
+.hero-card h2 { margin:0; font-size:15px; }
+.hero-card .brd-status { margin:2px 0 0; padding:5px 10px; font-size:11px; line-height:1.35; max-width:520px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* The "not generated yet" nudge is a call to action -- let it wrap rather than
+   truncate; the source-document line stays a single ellipsised chip. */
+#brd-status.brd-status { white-space:normal; }
+.upload-control { min-width:0; display:flex; flex-flow:row wrap; align-items:center; gap:8px; }
+.upload-control input[type=file] { flex:1 1 150px; min-width:0; font-size:12px; }
+.upload-control .primary-button { white-space:nowrap; }
+.upload-control small { flex-basis:100%; margin:0; }
+
+.stat-grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:11px; margin:0 0 22px; }
+.stat-card { padding:12px 15px; }
+.stat-card strong { margin-top:3px; font-size:19px; }
+.stat-card span { font-size:11.5px; }
+.overview-view .section-heading, #overview-view .section-heading { margin-top:8px; }

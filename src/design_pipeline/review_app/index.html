@@ -9,7 +9,7 @@
   <body>
     <div class="app-shell">
       <aside class="sidebar">
-        <div class="brand"><span class="brand-mark">✦</span><span>Design Pipeline</span></div>
+        <div class="brand"><span class="brand-mark">✦</span><span class="brand-name">AI Software Design Pipeline</span></div>
         <p class="sidebar-label">REVIEW WORKSPACE</p>
         <nav class="nav" aria-label="Workspace sections">
           <button class="nav-link active" data-view="projects">📁 Projects</button>
@@ -23,7 +23,6 @@
             <button class="nav-link" data-view="data-model">Data model</button>
             <button class="nav-link" data-view="architecture">Architecture</button>
             <button class="nav-link" data-view="mockups">Mockups</button>
-            <button class="nav-link" data-view="history">History</button>
           </div>
         </nav>
         <div class="sidebar-footer"><span id="workflow-status" class="status-pill muted">Loading</span><button id="refresh-button" class="text-button">Refresh</button></div>
@@ -33,7 +32,7 @@
         <!-- App-level brand: always pinned, never rewritten by JS -- the
              active project's own identity lives one level down, in
              .project-header below (see app.js's refresh()). -->
-        <header class="topbar"><div><p class="eyebrow">LOCAL DESIGN REVIEW</p><h1>AI Software Design Pipeline</h1></div></header>
+        <header class="topbar"><div><h1>AI Software Design Pipeline</h1></div></header>
 
         <!-- Project-level bar: hidden while on the Projects picker, shown
              for every view inside an open project (applyActiveTab in
@@ -45,9 +44,8 @@
             <button id="back-to-projects" class="text-button" title="Back to all projects">← All projects</button>
             <h2 id="project-header-name" class="project-name-view" title="Click to rename">Project</h2>
             <input id="project-header-name-input" class="project-name-input hidden" aria-label="Project name" />
-            <button id="delete-project-button" class="icon-button" title="Delete this project">🗑️</button>
           </div>
-          <div class="project-header-actions"><select id="provider-select" class="secondary-button" aria-label="Model provider" title="Model provider"><option value="stub">Stub (deterministic)</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><button id="run-button" class="primary-button">Generate / resume</button></div>
+          <div class="project-header-actions"><select id="provider-select" class="secondary-button" aria-label="Model provider" title="Model provider"><option value="stub">Stub (deterministic)</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select><select id="model-select" class="secondary-button" aria-label="Model" title="Model"><option value="">n/a for stub</option></select><button id="run-button" class="primary-button">Generate / resume</button></div>
         </div>
 
         <section id="notice" class="notice hidden" role="status"></section>
@@ -59,8 +57,8 @@
 
         <section id="overview-view" class="view">
           <div class="hero-card">
-            <div><p class="eyebrow">START WITH REQUIREMENTS</p><h2>Upload a business requirements document</h2><p>Use a Word document (.docx), PDF, Markdown, plain text, or reStructuredText. The pipeline extracts the text as its BRD input, then generates the business, solution, and system models.</p></div>
-            <div class="upload-control"><input id="document-input" type="file" accept=".docx,.pdf,.md,.markdown,.txt,.rst,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small><p id="brd-source" class="brd-status hidden"></p><p id="brd-status" class="brd-status hidden"></p></div>
+            <div class="hero-card-info"><h2>📄 Requirements document</h2><p id="brd-source" class="brd-status hidden"></p><p id="brd-status" class="brd-status hidden"></p></div>
+            <div class="upload-control"><input id="document-input" type="file" accept=".docx,.pdf,.md,.markdown,.txt,.rst,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small></div>
           </div>
           <div class="stat-grid" id="stats"></div>
           <div class="section-heading"><div><p class="eyebrow">GENERATED ARTIFACTS</p><h2>Design trace</h2></div><div class="section-actions"><button id="live-run-button" class="secondary-button" title="Discard downstream artifacts and regenerate the whole design with the current live provider">🔁 Regenerate whole design</button></div></div>
@@ -69,32 +67,40 @@
 
         <section id="system-view" class="view">
           <div class="section-heading"><div><p class="eyebrow">SYSTEM UNDERSTANDING</p><h2>System model</h2></div><div class="section-actions"><span id="system-model-status" class="status-pill muted"></span><button class="secondary-button hidden" data-stage-approve="system-model" data-stage-label="system model">✅ Approve</button><button class="secondary-button" data-stage-retry="system-model" data-stage-label="system model">🔁 Regenerate system model</button></div></div>
-          <div class="attachments-strip" data-references-strip="system"></div>
           <div id="system-model" class="model-layout empty-state">Generate the system model to see the traceability map.</div>
+          <details class="attachments-panel">
+            <summary class="attachments-summary">📎 Supporting documents<span class="attachments-summary-hint">extra context the AI reads when it generates the system model</span></summary>
+            <div class="attachments-strip" data-references-strip="system"></div>
+          </details>
         </section>
 
         <section id="data-model-view" class="view">
           <div class="section-heading"><div><p class="eyebrow">DATA MODELING</p><h2>Entities, fields &amp; relationships</h2></div><div class="section-actions"><span id="data-model-status" class="status-pill muted"></span><button class="secondary-button hidden" data-stage-approve="data-model" data-stage-label="data model">✅ Approve</button><button class="secondary-button" data-stage-retry="data-model" data-stage-label="data model">🔁 Regenerate data model</button><button class="secondary-button" id="export-data-model-button" title="Download the data model (JSON) and its ERD (Mermaid source) as a .zip">⬇️ Export</button></div></div>
-          <div class="attachments-strip" data-references-strip="data-model"></div>
           <div id="data-model" class="model-layout empty-state">Approve the system model to generate the data model.</div>
+          <details class="attachments-panel">
+            <summary class="attachments-summary">📎 Supporting documents<span class="attachments-summary-hint">extra context the AI reads when it generates the data model</span></summary>
+            <div class="attachments-strip" data-references-strip="data-model"></div>
+          </details>
         </section>
 
         <section id="architecture-view" class="view">
           <div class="section-heading"><div><p class="eyebrow">SOLUTION DESIGN</p><h2>Architecture and diagrams</h2></div><div class="section-actions"><span id="architecture-model-status" class="status-pill muted"></span><button class="secondary-button hidden" data-stage-approve="architecture-model" data-stage-label="architecture">✅ Approve</button><button class="secondary-button" data-stage-retry="architecture-model" data-stage-label="architecture">🔁 Regenerate architecture</button></div></div>
-          <div class="attachments-strip" data-references-strip="architecture"></div>
           <div id="architecture-model" class="model-layout empty-state">Approve the data model to generate architecture recommendations.</div>
+          <details class="attachments-panel">
+            <summary class="attachments-summary">📎 Supporting documents<span class="attachments-summary-hint">extra context the AI reads when it generates the architecture</span></summary>
+            <div class="attachments-strip" data-references-strip="architecture"></div>
+          </details>
         </section>
 
         <section id="mockups-view" class="view">
-          <div class="section-heading"><div><p class="eyebrow">INTERACTION DESIGN</p><h2>Mockup navigator</h2></div><div class="section-actions"><button class="secondary-button" data-stage-retry="mockup-pages" data-stage-label="mockups">🔁 Regenerate mockups</button><button class="secondary-button" id="export-mockups-button" title="Download every mockup screen as one self-contained, click-through HTML file -- share just this one file, nothing else needed">⬇️ Export</button></div></div>
-          <div class="attachments-strip" data-references-strip="mockup"></div>
+          <div class="section-heading"><div><p class="eyebrow">INTERACTION DESIGN</p><h2>Mockup navigator</h2></div><div class="section-actions"><button class="secondary-button" data-stage-retry="mockup-pages" data-stage-label="mockups">🔁 Regenerate all mockups</button><button class="secondary-button" id="export-mockups-button" title="Download every mockup screen as one self-contained, click-through HTML file -- share just this one file, nothing else needed">⬇️ Export</button></div></div>
           <div id="mockup-model" class="model-layout empty-state">Approve the architecture to generate the mockup specification.</div>
+          <details class="attachments-panel">
+            <summary class="attachments-summary">📎 Supporting documents<span class="attachments-summary-hint">extra context the AI reads when it regenerates or adds screens</span></summary>
+            <div class="attachments-strip" data-references-strip="mockup"></div>
+          </details>
         </section>
 
-        <section id="history-view" class="view">
-          <div class="section-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>Generation history</h2></div><p>Every generation, approval, comment, retry, and handoff is recorded here.</p></div>
-          <div id="history-list" class="history-list empty-state">No recorded events yet.</div>
-        </section>
       </main>
     </div>
 

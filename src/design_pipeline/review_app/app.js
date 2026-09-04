@@ -16,6 +16,79 @@ const api = async (path, options = {}) => {
   return response.status === 204 ? null : response.json();
 };
 const titleCase = (value = "") => value.replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+// Curated, text/tool-calling-capable models per live provider -- every `id`
+// is EXACTLY the string that provider's API expects in the "model" request
+// field (verified against each provider's own docs, Sept 2026), so picking
+// one from this dropdown always works with no env-var editing. Image/audio/
+// video/embedding/moderation-only models are deliberately excluded: this app
+// only ever does structured JSON + tool-calling text generation, and letting
+// someone select e.g. an image model here would just produce a confusing
+// live-provider error. Update this list if a provider ships new IDs.
+const MODEL_CATALOG = {
+  openai: [
+    { group: "Flagship", models: [
+      ["gpt-6-astra", "GPT-6 Astra"], ["gpt-5.6-sol", "GPT-5.6 Sol"], ["gpt-5.6-terra", "GPT-5.6 Terra"], ["gpt-5.6-luna", "GPT-5.6 Luna"],
+      ["gpt-5.5-pro", "GPT-5.5 Pro"], ["gpt-5.5", "GPT-5.5"],
+      ["gpt-5.4-pro", "GPT-5.4 Pro"], ["gpt-5.4", "GPT-5.4"], ["gpt-5.4-mini", "GPT-5.4 Mini"], ["gpt-5.4-nano", "GPT-5.4 Nano"],
+      ["gpt-5.2-pro", "GPT-5.2 Pro"], ["gpt-5.2", "GPT-5.2"], ["gpt-5.1", "GPT-5.1"],
+      ["gpt-5-pro", "GPT-5 Pro"], ["gpt-5", "GPT-5"], ["gpt-5-mini", "GPT-5 Mini"], ["gpt-5-nano", "GPT-5 Nano"],
+    ] },
+    { group: "Reasoning (o-series, legacy)", models: [
+      ["o3-pro", "o3 Pro"], ["o3", "o3"], ["o3-mini", "o3 Mini"], ["o4-mini", "o4 Mini"], ["o1-pro", "o1 Pro"], ["o1", "o1"],
+    ] },
+    { group: "GPT-4.1 / GPT-4o (legacy)", models: [
+      ["gpt-4.1", "GPT-4.1"], ["gpt-4.1-mini", "GPT-4.1 Mini"], ["gpt-4.1-nano", "GPT-4.1 Nano"], ["gpt-4o", "GPT-4o"], ["gpt-4o-mini", "GPT-4o Mini"],
+    ] },
+  ],
+  anthropic: [
+    { group: "Current", models: [
+      ["claude-opus-5", "Claude Opus 5"], ["claude-fable-5-1", "Claude Fable 5.1"], ["claude-sonnet-5", "Claude Sonnet 5"], ["claude-haiku-4-5-20251001", "Claude Haiku 4.5"],
+    ] },
+    { group: "Legacy", models: [
+      ["claude-fable-5", "Claude Fable 5"], ["claude-opus-4-8", "Claude Opus 4.8"], ["claude-opus-4-7", "Claude Opus 4.7"], ["claude-opus-4-6", "Claude Opus 4.6"],
+      ["claude-sonnet-4-6", "Claude Sonnet 4.6"], ["claude-sonnet-4-5", "Claude Sonnet 4.5"],
+    ] },
+  ],
+  gemini: [
+    { group: "Gemini 3.x", models: [
+      ["gemini-3.8-flash", "Gemini 3.8 Flash"], ["gemini-3.7-flash", "Gemini 3.7 Flash"], ["gemini-3.6-flash", "Gemini 3.6 Flash"],
+      ["gemini-3.5-flash", "Gemini 3.5 Flash"], ["gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite"], ["gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite"],
+      ["gemini-3.1-pro-preview", "Gemini 3.1 Pro (Preview)"], ["gemini-3-flash-preview", "Gemini 3 Flash (Preview)"],
+    ] },
+    { group: "Gemini 2.5 (legacy)", models: [
+      ["gemini-2.5-pro", "Gemini 2.5 Pro"], ["gemini-2.5-flash", "Gemini 2.5 Flash"], ["gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite"],
+    ] },
+  ],
+};
+
+// Rebuilds #model-select's options for `provider`, selecting `currentModel`.
+// A model already configured (e.g. via .env before this dropdown existed)
+// that isn't in our curated list is never silently dropped -- it's shown as
+// a synthetic "Custom: <id>" option instead, so switching provider dropdowns
+// can't quietly change what's actually configured.
+function populateModelSelect(provider, currentModel) {
+  const select = $("#model-select");
+  if (!select) return;
+  select.innerHTML = "";
+  if (provider === "stub" || !MODEL_CATALOG[provider]) {
+    select.disabled = true;
+    select.innerHTML = `<option value="">n/a for stub</option>`;
+    return;
+  }
+  select.disabled = false;
+  const groups = MODEL_CATALOG[provider];
+  let found = false;
+  const optgroupsHtml = groups.map(({ group, models }) => {
+    const options = models.map(([id, label]) => {
+      if (id === currentModel) found = true;
+      return `<option value="${escapeHtml(id)}" ${id === currentModel ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    }).join("");
+    return `<optgroup label="${escapeHtml(group)}">${options}</optgroup>`;
+  }).join("");
+  const customOption = (currentModel && !found) ? `<option value="${escapeHtml(currentModel)}" selected>Custom: ${escapeHtml(currentModel)}</option>` : "";
+  select.innerHTML = customOption + optgroupsHtml;
+}
 // Downloads a file-returning GET endpoint (a .zip export, so far) as a real
 // browser download. Deliberately not a plain `location.href = url` link:
 // on a 404 (e.g. exporting before a data model/mockups exist) that would
@@ -140,21 +213,171 @@ async function ensureProject() {
   try { return await api("/status"); } catch (error) { if (!String(error.message).includes("not initialized")) throw error; return api("/initialize", { method: "POST" }); }
 }
 function setWorkflowStatus(status) { const item = $("#workflow-status"); item.textContent = titleCase(status || "not started"); item.className = `status-pill ${status || "muted"}`; }
+// The run button previously always said "Generate / resume" no matter what
+// state the workflow was actually in -- true for "nothing started yet" and
+// "paused, waiting for you to continue after an approval," but misleading
+// once the design was finished (nothing left to run) or a step had failed
+// (this click is really a retry there, not a fresh "generate"). Label and
+// enabled-state now reflect state.status.workflow_status; called from
+// refresh(), from pollWorkflowUntilDone on every tick, and after a click
+// finishes (instead of blindly restoring the pre-click label, which would
+// otherwise clobber whatever this just set).
+function updateRunButton() {
+  const button = $("#run-button");
+  if (!button || button.dataset.busy === "true") return; // a click is actively running -- its own spinner owns the label
+  const status = state.status?.workflow_status;
+  const map = {
+    running: { label: "⏳ Running…", disabled: true },
+    completed: { label: "✓ Completed", disabled: true },
+    failed: { label: "↻ Retry", disabled: false },
+    paused: { label: "▶ Resume", disabled: false },
+  };
+  const { label, disabled } = map[status] || { label: "▶ Generate", disabled: false };
+  button.innerHTML = label;
+  button.disabled = disabled;
+}
 function renderStats() {
+  // Kept lean and relevant: overall status + the counts that tell you whether
+  // anything needs you. "Agent mode" was dropped -- the provider is already
+  // shown and controlled by the selector in the project header.
   const workflow = state.status?.workflow_status || "not_started";
   const reviewCount = state.artifacts.filter((artifact) => artifact.status === "awaiting_review").length;
   const approved = state.artifacts.filter((artifact) => artifact.status === "approved").length;
-  const provider = state.status?.provider;
-  const agentMode = provider ? `${titleCase(provider.provider)} · ${titleCase(provider.mode)}` : "Stub · Deterministic";
-  $("#stats").innerHTML = [["Workflow", titleCase(workflow)], ["Agent mode", agentMode], ["Artifacts", state.artifacts.length], ["Awaiting review", reviewCount], ["Approved", approved]].map(([label, value]) => `<div class="stat-card"><span>${label}</span><strong>${value}</strong></div>`).join("");
+  $("#stats").innerHTML = [["Workflow", titleCase(workflow)], ["Artifacts", state.artifacts.length], ["Awaiting review", reviewCount], ["Approved", approved]].map(([label, value]) => `<div class="stat-card"><span>${label}</span><strong>${value}</strong></div>`).join("");
 }
-function renderArtifacts() {
+// The Design Trace renders the pipeline as a live DAG of nodes: each stage's
+// output artifacts are node cards, chained left-to-right by SVG connectors,
+// coloured by live state (pending -> generating -> generated/needs-review ->
+// approved), with human-approval gates shown between stages. It updates in
+// real time while a run is in flight (see pollWorkflowUntilDone) and each node
+// opens its artifact's details on click.
+//
+// This descriptor MIRRORS src/design_pipeline/runtime.py's DEFAULT_WORKFLOW
+// (step ids + their outputs, in dependency order). If that workflow changes,
+// update this to match.
+const TRACE_PIPELINE = [
+  { kind: "step", step: "inspect-project", nodes: [{ id: "project-inspection", label: "Project inspection", icon: "🔍" }] },
+  { kind: "step", step: "requirements", nodes: [{ id: "brd", label: "Requirements (BRD)", icon: "📄" }] },
+  { kind: "step", step: "requirements-model", nodes: [
+      { id: "business-model", label: "Business model", icon: "🏢" },
+      { id: "solution-model", label: "Solution model", icon: "🧩" },
+      { id: "system-model", label: "System model", icon: "🗺️" },
+  ] },
+  { kind: "gate", step: "requirements-approval", label: "Approve" },
+  { kind: "step", step: "data-modeling", nodes: [{ id: "data-model", label: "Data model", icon: "🗄️" }] },
+  { kind: "gate", step: "data-model-approval", label: "Approve" },
+  { kind: "step", step: "architecture", nodes: [
+      { id: "architecture-model", label: "Architecture", icon: "🏛️" },
+      { id: "diagram-recommendations", label: "Diagram plan", icon: "📐" },
+      { id: "diagrams", label: "Diagrams", icon: "📊" },
+  ] },
+  { kind: "gate", step: "architecture-approval", label: "Approve" },
+  { kind: "step", step: "mockups", nodes: [
+      { id: "mockup-spec", label: "Mockup spec", icon: "📱" },
+      { id: "mockup-pages", label: "Mockup pages", icon: "🖼️" },
+  ] },
+];
+
+function traceNodeState(nodeId, stepState) {
+  const art = state.artifacts.find((a) => a.logical_id === nodeId);
+  if (art) {
+    if (art.status === "awaiting_review") return { cls: "review", meta: "Needs review" };
+    if (art.status === "changes_requested") return { cls: "review", meta: "Changes requested" };
+    if (art.status === "failed") return { cls: "failed", meta: "Failed" };
+    if (art.status === "approved") return { cls: "done", meta: `v${art.version} · Approved` };
+    return { cls: "done", meta: `v${art.version} · Generated` };
+  }
+  if (stepState === "running") return { cls: "running", meta: "Generating…" };
+  if (stepState === "failed") return { cls: "failed", meta: "Failed" };
+  return { cls: "pending", meta: "Pending" };
+}
+
+function traceGateState(stepId) {
+  const s = state.status?.steps?.[stepId];
+  if (s === "completed") return { cls: "done", icon: "✓", meta: "Approved" };
+  if (s === "awaiting_review" || s === "paused") return { cls: "review", icon: "⏳", meta: "Awaiting approval" };
+  if (s === "running") return { cls: "running", icon: "⏳", meta: "In progress" };
+  return { cls: "pending", icon: "🔒", meta: "Locked" };
+}
+
+function renderDesignTrace() {
   const target = $("#artifact-cards");
-  if (!state.artifacts.length) return empty(target, "No artifacts yet. Upload a document and start generation.");
-  target.className = "artifact-grid";
-  target.innerHTML = state.artifacts.map((artifact) => `<button class="artifact-card" data-artifact="${artifact.logical_id}"><p>${titleCase(artifact.type)}</p><h3>${titleCase(artifact.logical_id)}</h3><p>v${artifact.version} · ${artifact.requirements.length} linked requirement${artifact.requirements.length === 1 ? "" : "s"}</p><span class="status-pill ${artifact.status}">${titleCase(artifact.status)}</span></button>`).join("");
+  const started = state.status && state.status.workflow_status && state.status.workflow_status !== "not_started";
+  if (!state.artifacts.length && !started) {
+    return empty(target, "No artifacts yet. Upload a document and click Generate to watch the design trace build in real time.");
+  }
+  const steps = state.status?.steps || {};
+  const cols = TRACE_PIPELINE.map((col) => {
+    if (col.kind === "gate") {
+      const g = traceGateState(col.step);
+      return `<div class="trace-col trace-col-gate"><div class="trace-gate ${g.cls}" title="${escapeHtml(g.meta)}"><span class="trace-gate-icon">${g.icon}</span><span class="trace-gate-label">${escapeHtml(col.label)}</span></div></div>`;
+    }
+    const stepState = steps[col.step];
+    const nodes = col.nodes.map((node) => {
+      const st = traceNodeState(node.id, stepState);
+      const clickable = st.cls !== "pending";
+      return `<button class="trace-node ${st.cls}"${clickable ? ` data-artifact="${escapeHtml(node.id)}"` : " disabled"}>
+        <span class="trace-node-icon">${node.icon}</span>
+        <span class="trace-node-body"><span class="trace-node-title">${escapeHtml(node.label)}</span><span class="trace-node-meta">${escapeHtml(st.meta)}</span></span>
+      </button>`;
+    }).join("");
+    return `<div class="trace-col">${nodes}</div>`;
+  }).join("");
+  target.className = "trace-graph";
+  target.innerHTML = `<svg class="trace-edges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg><div class="trace-cols">${cols}</div>`;
   target.querySelectorAll("[data-artifact]").forEach((button) => button.addEventListener("click", () => openArtifact(button.dataset.artifact)));
+  scheduleTraceEdges(target);
 }
+
+// The connectors need real layout dimensions, which aren't ready the instant
+// after innerHTML. Retry (via setTimeout, NOT requestAnimationFrame -- rAF is
+// paused while the tab/preview pane is backgrounded, which would leave the
+// graph with no edges until focus returned) until the columns have width.
+function scheduleTraceEdges(target, tries = 0) {
+  setTimeout(() => {
+    const wrap = target.querySelector(".trace-cols");
+    if (wrap && wrap.offsetWidth > 0) drawTraceEdges(target);
+    else if (tries < 20) scheduleTraceEdges(target, tries + 1);
+  }, tries === 0 ? 0 : 60);
+}
+
+// Draw the connector curves after layout, using offset coordinates (robust to
+// horizontal scrolling, unlike getBoundingClientRect). Edges run from each
+// stage's right edge to every node in the next stage, so a stage that produces
+// several artifacts at once fans out visibly.
+function drawTraceEdges(container) {
+  if (!container || !container.classList.contains("trace-graph")) return;
+  const svg = container.querySelector(".trace-edges");
+  const wrap = container.querySelector(".trace-cols");
+  const cols = [...container.querySelectorAll(".trace-col")];
+  if (!svg || !wrap || cols.length < 2) { if (svg) svg.innerHTML = ""; return; }
+  const w = wrap.offsetWidth, h = wrap.offsetHeight;
+  if (!w || !h) { svg.innerHTML = ""; return; } // view hidden -- redrawn when shown
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.style.width = `${w}px`; svg.style.height = `${h}px`;
+  const paths = [];
+  for (let i = 0; i < cols.length - 1; i++) {
+    const parent = cols[i], child = cols[i + 1];
+    const px = parent.offsetLeft + parent.offsetWidth;
+    const py = parent.offsetTop + parent.offsetHeight / 2;
+    [...child.querySelectorAll(".trace-node, .trace-gate")].forEach((node) => {
+      const nx = child.offsetLeft;
+      const ny = node.offsetTop + node.offsetHeight / 2;
+      const mid = px + (nx - px) / 2;
+      const cls = node.classList;
+      const reached = cls.contains("done") || cls.contains("review") || cls.contains("failed");
+      const flowing = cls.contains("running");
+      paths.push(`<path d="M ${px} ${py} C ${mid} ${py}, ${mid} ${ny}, ${nx} ${ny}" class="trace-edge${reached ? " on" : ""}${flowing ? " flow" : ""}" fill="none" />`);
+    });
+  }
+  svg.innerHTML = paths.join("");
+}
+
+function redrawTraceEdges() {
+  const target = document.getElementById("artifact-cards");
+  if (target && target.classList.contains("trace-graph")) scheduleTraceEdges(target);
+}
+window.addEventListener("resize", redrawTraceEdges);
 function list(items) { return items?.length ? `<ul class="list">${items.map((item) => `<li>${item}</li>`).join("")}</ul>` : "<p class=\"muted-copy\">No items recorded.</p>"; }
 // Renders one system-model list field (requirements, system_capabilities,
 // services, screens, business_workflows, ...) as a column of items that
@@ -313,8 +536,10 @@ async function renderDataModel() {
 
   try {
     const { mermaid_source } = await api("/data-model/erd");
-    $("#data-model-erd").textContent = mermaid_source;
-    if (window.mermaid) await window.mermaid.run({ querySelector: "#data-model-erd" });
+    const erd = $("#data-model-erd");
+    erd.textContent = mermaid_source;
+    erd.setAttribute("data-src", mermaid_source); // lets renderPendingDiagrams re-render it if it first drew while hidden
+    await renderPendingDiagrams($("#data-model-view"));
   } catch (error) { /* ERD panel just stays as raw text if rendering fails */ }
 }
 function wireDataModel(target) {
@@ -394,15 +619,59 @@ async function renderArchitecture() {
   const diagramsArtifact = state.artifacts.find((item) => item.logical_id === "diagrams");
   let diagrams = []; if (diagramsArtifact) diagrams = (await api(`/artifacts/diagrams`)).content || [];
   target.className = "model-layout";
-  target.innerHTML = `<div class="panel"><h3>${architecture.style || "Architecture"}</h3><p class="muted-copy">${architecture.rationale || ""}</p><div class="component-flow">${(architecture.components || []).map((component, index) => `<div class="component">${component}</div>${index < architecture.components.length - 1 ? "<span class=\"arrow\">→</span>" : ""}`).join("")}</div></div><div class="model-grid"><div class="panel"><h3>Boundaries</h3>${list(architecture.boundaries)}</div><div class="panel"><h3>Recommended diagrams</h3>${list(recommended?.recommended)}</div></div>${renderDiagrams(diagrams)}`;
-  const renderable = diagrams.filter((diagram) => diagram.valid !== false && (diagram.mermaid_source || diagram.mermaid_code || diagram.code));
-  if (renderable.length && window.mermaid) {
-    try { await window.mermaid.run({ querySelector: "#architecture-model .mermaid" }); } catch (error) { /* raw Mermaid source stays visible if rendering fails */ }
-  }
+  // Each panel only renders when the model actually produced content for it --
+  // a live generation sometimes leaves style/rationale/components/boundaries/
+  // recommended empty, and a bare "Architecture" box with nothing under it
+  // (or a "Boundaries" card that only ever says "No items recorded.") is
+  // noise, not information.
+  const hasOverview = architecture.style || architecture.rationale || architecture.components?.length;
+  const overviewPanel = hasOverview ? `<div class="panel">${architecture.style ? `<h3>${escapeHtml(architecture.style)}</h3>` : ""}${architecture.rationale ? `<p class="muted-copy">${escapeHtml(architecture.rationale)}</p>` : ""}${architecture.components?.length ? `<div class="component-flow">${architecture.components.map((component, index) => `<div class="component">${escapeHtml(component)}</div>${index < architecture.components.length - 1 ? "<span class=\"arrow\">→</span>" : ""}`).join("")}</div>` : ""}</div>` : "";
+  const boundariesPanel = architecture.boundaries?.length ? `<div class="panel"><h3>Boundaries</h3>${list(architecture.boundaries)}</div>` : "";
+  const recommendedPanel = recommended?.recommended?.length ? `<div class="panel"><h3>Recommended diagrams</h3>${list(recommended.recommended)}</div>` : "";
+  // Only one of the two? Let it span the full row instead of sitting narrow
+  // in a two-column grid built for a pair.
+  const gridPanel = (boundariesPanel && recommendedPanel) ? `<div class="model-grid">${boundariesPanel}${recommendedPanel}</div>` : (boundariesPanel || recommendedPanel);
+  target.innerHTML = `${overviewPanel}${gridPanel}${renderDiagrams(diagrams)}` || `<p class="empty-state">Architecture approved, but no overview, boundaries, or diagrams were generated for it.</p>`;
+  await renderPendingDiagrams($("#architecture-view"));
   target.querySelectorAll("[data-comment-diagram]").forEach((button) => button.addEventListener("click", () => {
     const name = button.dataset.commentDiagram;
     addLocatedComment("diagrams", { kind: "diagram", diagram_name: name }, `Comment on the "${name}" diagram:`);
   }));
+}
+// Mermaid measures layout via getBBox(), which returns 0 inside a display:none
+// view -- so a diagram rendered while its tab is hidden becomes a zero-width,
+// broken SVG that mermaid then marks data-processed and refuses to re-render.
+// refresh() builds every view's diagrams at once, so all but the active tab
+// were born broken (only a full reload, landing directly on that tab, fixed
+// them). This renders only diagrams whose view is actually on screen, and
+// recovers any that first drew while hidden by resetting them from data-src.
+// All calls are serialized so two mermaid.run()s never overlap.
+let _diagramChain = Promise.resolve();
+function renderPendingDiagrams(scope) {
+  _diagramChain = _diagramChain.then(() => _renderPendingDiagramsNow(scope)).catch(() => {});
+  return _diagramChain;
+}
+async function _renderPendingDiagramsNow(scope) {
+  if (!window.mermaid) return;
+  const root = scope || document.querySelector(".view.active");
+  if (!root) return;
+  const pending = [...root.querySelectorAll(".mermaid")].filter((el) => {
+    if (el.offsetParent === null) return false; // view still hidden -- defer to when it's shown
+    const svg = el.querySelector("svg");
+    const broken = !svg || svg.getBoundingClientRect().width < 1;
+    return !el.getAttribute("data-processed") || broken;
+  });
+  if (!pending.length) return;
+  for (const el of pending) {
+    // A broken/processed node won't be re-run by mermaid unless we reset it
+    // back to its source text and clear the processed flag.
+    const src = el.getAttribute("data-src");
+    if (src != null && el.getAttribute("data-processed")) {
+      el.removeAttribute("data-processed");
+      el.textContent = src;
+    }
+  }
+  try { await window.mermaid.run({ nodes: pending }); } catch (error) { /* raw source stays visible */ }
 }
 function renderDiagrams(diagrams) {
   if (!diagrams.length) return "";
@@ -419,7 +688,7 @@ function renderDiagrams(diagrams) {
     if (diagram.valid === false || !source) {
       return `<div class="diagram-block"><h4>${name} ${commentButton}</h4><p class="muted-copy">Not rendered: ${escapeHtml(detail || "invalid Mermaid syntax")}</p></div>`;
     }
-    return `<div class="diagram-block"><h4>${name} ${commentButton}</h4><pre class="mermaid" id="diagram-${index}">${escapeHtml(source)}</pre>${chartLink}</div>`;
+    return `<div class="diagram-block"><h4>${name} ${commentButton}</h4><pre class="mermaid" id="diagram-${index}" data-src="${escapeHtml(source)}">${escapeHtml(source)}</pre>${chartLink}</div>`;
   }).join("");
   return `<div class="panel"><h3>Diagrams</h3>${blocks}</div>`;
 }
@@ -660,13 +929,44 @@ async function renderMockups() {
   const html = pageHtml(page);
   // sandbox="allow-scripts" (deliberately NOT allow-same-origin): model-authored
   // JS runs for local interactivity, but stays fully isolated from this app.
+  // Premium two-tier "control deck": a title row (screen identity + passive
+  // review actions) over a distinct AI-edits band that elevates the four
+  // generative, AI-powered actions. Every data-* hook and the
+  // #mockup-comment-toggle id are preserved exactly so the handlers below
+  // and setCommentMode() keep working unchanged.
   const toolbar = html
-    ? `<div class="mock-toolbar"><span>${escapeHtml(activeName)}</span><div class="toolbar-buttons"><button class="secondary-button" data-fullscreen-screen title="Open this screen filling the whole page, like the real application">⛶ Full screen</button><button class="secondary-button" data-comment-screen>💬 Comment on screen</button><button class="secondary-button" id="mockup-comment-toggle" data-comment-element>📍 Comment on element</button><button class="secondary-button" data-retry-screen title="Regenerate only this screen -- every other screen stays exactly as-is">🎯 Regenerate this screen</button><button class="secondary-button" data-add-linked-screen title="Add a brand-new screen this one navigates to (e.g. a Create button that should open its own screen, not a modal) -- every other screen stays exactly as-is">➕ Add linked screen</button><button class="secondary-button" data-split-screen title="Move part of this screen (e.g. a hardcoded record's detail) out into its own new linked screen, leaving a genuine list/summary here -- every other screen stays exactly as-is">🔀 Split this screen</button><button class="secondary-button" data-mockup-chat title="Describe changes across multiple screens in plain language -- the system plans the operations for your confirmation before executing">💬 Chat</button></div></div>`
+    ? `<div class="mock-deck">
+        <div class="mock-deck-head">
+          <div class="mock-deck-title">
+            <span class="mock-deck-name">${escapeHtml(activeName)}</span>
+            <span class="mock-deck-count">${state.currentMockup + 1} / ${screens.length}</span>
+            ${active?.purpose ? `<span class="mock-deck-purpose">${escapeHtml(active.purpose)}</span>` : ""}
+          </div>
+          <div class="mock-deck-review">
+            <button class="deck-ghost" data-fullscreen-screen title="Open this screen filling the whole page, like the real application">⛶ Full screen</button>
+            <button class="deck-ghost" data-comment-screen title="Leave a review comment on this whole screen">💬 Comment</button>
+            <button class="deck-ghost" id="mockup-comment-toggle" data-comment-element title="Click any element in the mockup to pin a comment right to it">📍 Pin element</button>
+          </div>
+        </div>
+        <div class="mock-ai-band">
+          <span class="ai-band-label">✦ AI edits</span>
+          <div class="ai-actions">
+            <button class="ai-action" data-retry-screen title="Regenerate only this screen -- every other screen stays exactly as-is">🎯 <span>Regenerate</span></button>
+            <button class="ai-action" data-add-linked-screen title="Add a brand-new screen this one navigates to (e.g. a Create button that should open its own screen, not a modal) -- every other screen stays exactly as-is">➕ <span>Add screen</span></button>
+            <button class="ai-action" data-split-screen title="Move part of this screen (e.g. a hardcoded record's detail) out into its own new linked screen, leaving a genuine list/summary here -- every other screen stays exactly as-is">🔀 <span>Split</span></button>
+            <button class="ai-action ai-action-chat" data-mockup-chat title="Describe changes across multiple screens in plain language -- the system plans the operations for your confirmation before executing">💬 <span>Chat edits</span></button>
+          </div>
+        </div>
+      </div>`
     : "";
   const frame = html
     ? `<div class="mock-frame-wrap"><iframe class="mock-frame-iframe" title="${escapeHtml(activeName)} mockup" sandbox="allow-scripts" srcdoc="${escapeHtml(html)}"></iframe><div class="mock-pin-layer"></div></div>`
     : `<div class="mock-frame"><header><div><p class="eyebrow">INTERACTIVE MOCKUP</p><h3>${escapeHtml(activeName)}</h3>${active?.purpose ? `<p class="muted-copy">${escapeHtml(active.purpose)}</p>` : ""}</div><span class="status-pill">Synthetic data</span></header><div class="mock-content"><div class="mock-block"><strong>Workflow status</strong><p class="muted-copy">Awaiting review</p></div><div class="mock-block"><strong>Linked artifacts</strong><p class="muted-copy">System model · Architecture</p></div><div class="mock-block"><strong>Actions</strong><p class="muted-copy">Approve · Request changes</p></div></div></div>`;
-  target.innerHTML = `<div class="screen-list">${buildScreenList(screens, state.currentMockup, pages)}</div><div class="mock-column">${toolbar}<div id="mock-comments" class="mock-comments"></div>${frame}</div>`;
+  const railLabel = html ? `<p class="screen-rail-label">Screens <span>${screens.length}</span></p>` : "";
+  // #mock-comments starts hidden: renderScreenComments() below reveals it only
+  // when this screen actually has open comments (and leaves it hidden on the
+  // empty or fetch-error paths), so there's never a bare yellow strip.
+  target.innerHTML = `<div class="screen-list">${railLabel}${buildScreenList(screens, state.currentMockup, pages)}</div><div class="mock-column">${toolbar}<div id="mock-comments" class="mock-comments hidden"></div>${frame}</div>`;
   target.querySelectorAll("[data-screen]").forEach((button) => button.addEventListener("click", () => { state.currentMockup = Number(button.dataset.screen); renderMockups(); }));
   target.querySelector("[data-fullscreen-screen]")?.addEventListener("click", openFullscreenMockup);
   target.querySelector("[data-comment-screen]")?.addEventListener("click", () => {
@@ -997,11 +1297,6 @@ async function renderReferencesStrip(stage) {
     } catch (error) { showNotice(error.message, true); button.disabled = false; }
   }));
 }
-function renderHistoryList(history) {
-  const target = $("#history-list");
-  if (!history.length) return empty(target, "No recorded events yet.");
-  target.className = "history-list"; target.innerHTML = history.slice().reverse().map((event) => `<div class="history-item"><div><strong>${titleCase(event.event_type)}</strong><p>${event.details?.filename || event.artifact_id || event.step_id || "Project"}</p></div><p>${new Date(event.timestamp).toLocaleString()}</p></div>`).join("");
-}
 // The most recently uploaded document's name, shown permanently (unlike
 // renderBrdStatus's banner below, which hides again once that upload is
 // reflected in a generated `brd` artifact). Without this, once the
@@ -1023,7 +1318,7 @@ function renderBrdSource(history) {
 // to "No file selected", and the artifact list still says "No artifacts
 // yet", making an actually-successful upload look like it vanished. The
 // BRD_INGESTED event it does append is persisted (survives reload), so
-// surface that here instead of just leaving it buried in the History tab.
+// surface that here instead of leaving it undiscoverable.
 //
 // "Any artifacts exist" is NOT the same as "this upload is already
 // reflected" -- a project can generate its first pass from one BRD, then
@@ -1043,7 +1338,10 @@ function renderBrdStatus(history) {
   const alreadyReflected = generatedAt && new Date(generatedAt) >= new Date(lastIngest.timestamp);
   if (alreadyReflected) { el.classList.add("hidden"); el.textContent = ""; return; }
   el.classList.remove("hidden");
-  el.textContent = `📄 ${lastIngest.details?.filename || "Document"} uploaded ${new Date(lastIngest.timestamp).toLocaleString()} -- click "Generate / resume" above to build your project from it.`;
+  // The run button's own label is now dynamic (see updateRunButton) --
+  // "Generate", "Resume", or "Retry" depending on where the workflow is --
+  // so this doesn't quote one fixed label that would be wrong half the time.
+  el.textContent = `📄 ${lastIngest.details?.filename || "Document"} uploaded ${new Date(lastIngest.timestamp).toLocaleString()} -- click the button above to build your project from it.`;
 }
 async function refresh() {
   // The heading previously showed state.status.project_id verbatim -- the
@@ -1065,12 +1363,13 @@ async function refresh() {
     state.artifacts = status.artifacts;
     $("#project-header-name").textContent = state.projects.find((project) => project.id === state.status.project_id)?.name || state.status.project_id || "Project";
     setWorkflowStatus(state.status.workflow_status);
+    updateRunButton();
     renderStats();
-    renderArtifacts();
+    renderDesignTrace();
     ["system-model", "data-model", "architecture-model"].forEach(updateStageStatus);
     if (state.status.provider?.provider) $("#provider-select").value = state.status.provider.provider;
+    populateModelSelect(state.status.provider?.provider, state.status.provider?.model);
     if (state.status.provider?.mode === "live" && !state.status.provider.configured) showNotice(`${titleCase(state.status.provider.provider)} is selected but needs an API key and model in .env -- no restart needed once it's saved.`, true);
-    renderHistoryList(history);
     renderBrdSource(history);
     renderBrdStatus(history);
     await Promise.all([renderSystemModel(), renderDataModel(), renderArchitecture(), renderMockups(), renderReferencesStrip("system"), renderReferencesStrip("data-model"), renderReferencesStrip("architecture"), renderReferencesStrip("mockup")]);
@@ -1088,8 +1387,14 @@ async function pollWorkflowUntilDone(intervalMs = 3000) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
     const status = await api("/status");
     state.status = status;
+    // /status embeds the live artifact list too -- update it so the Design
+    // Trace graph advances in real time (nodes flip to generating -> green,
+    // gates unlock) on every poll tick, not just once the run finishes.
+    if (status.artifacts) state.artifacts = status.artifacts;
     setWorkflowStatus(status.workflow_status);
-    if (status.workflow_status !== "running") break;
+    renderStats();
+    renderDesignTrace();
+    if (status.workflow_status !== "running") break; // updateRunButton() runs once, after the loop -- see below
   }
   await refresh();
   const finalStatus = state.status.workflow_status;
@@ -1130,7 +1435,7 @@ async function action(path, body = {}, loadingNotice = null) {
 // Hash routing: URL is #/projects/{project_id}/{tab}. Nav-link clicks
 // update the hash; a hashchange listener applies the change. This keeps
 // the active tab (and current project) across refreshes.
-const VALID_TABS = new Set(["overview", "system", "data-model", "architecture", "mockups", "history"]);
+const VALID_TABS = new Set(["overview", "system", "data-model", "architecture", "mockups"]);
 // A project-scoped URL always looks like #/projects/<id>/<tab>. Anything
 // else -- the bare root, "#/projects" with no id, a stale/unknown project
 // id -- lands on the Projects picker (projectId null, tab "projects")
@@ -1164,6 +1469,16 @@ function applyActiveTab(tab, projectId) {
   const inProject = tab !== "projects" && !!projectId;
   document.querySelector(".project-tabs")?.classList.toggle("hidden", !inProject);
   document.querySelector(".project-header")?.classList.toggle("hidden", !inProject);
+  // Inside a project the big app-level topbar is pure redundancy -- the
+  // sidebar brand already carries the app identity and the project-header
+  // carries the active project's -- so hide it there and give that vertical
+  // space back to the actual work (mockups especially). It stays on the
+  // Projects picker, where it's the page's own heading.
+  document.querySelector(".topbar")?.classList.toggle("hidden", inProject);
+  // Same redundancy in the sidebar: the "Projects" nav item duplicates the
+  // header's "<- All projects" link once a project is open, so drop it there
+  // and let the workspace tabs own the rail. It returns on the picker.
+  document.querySelector('.nav-link[data-view="projects"]')?.classList.toggle("hidden", inProject);
 }
 document.addEventListener("click", (event) => { if (!event.target.closest(".mock-pin-popover, .mock-pin")) closePinPopover(); });
 document.querySelectorAll(".nav-link").forEach((button) => button.addEventListener("click", () => {
@@ -1181,6 +1496,12 @@ async function onHashChange() {
     state.projectId = projectId;
     if (projectId) { renderOverviewSkeleton(); await refresh(); } else await renderProjectsView();
   }
+  // The view just became visible -- render any of its diagrams that are still
+  // unrendered or that drew broken (0-width) while the tab was hidden.
+  renderPendingDiagrams();
+  // The trace-graph's SVG connectors can't be measured while its view is
+  // hidden (offsetWidth is 0), so redraw them now that Overview is on screen.
+  if (tab === "overview") redrawTraceEdges();
 }
 window.addEventListener("hashchange", onHashChange);
 
@@ -1191,12 +1512,35 @@ async function renderProjectsView() {
   renderProjectCardsSkeleton();
   await refreshProjects();
   const grid = $("#project-cards");
+  // Card = a div holding two sibling buttons (never nested -- that's invalid
+  // HTML): a full-bleed "open" button and a hover-revealed delete button.
   const cards = state.projects
-    .map((project) => `<button class="project-card" data-project-card="${escapeHtml(project.id)}"><span class="project-card-name">${escapeHtml(project.name || project.id)}</span><span class="project-card-id">${escapeHtml(project.id)}</span></button>`)
+    .map((project) => `<div class="project-card">
+      <button class="project-card-open" data-project-card="${escapeHtml(project.id)}">
+        <span class="project-card-name">${escapeHtml(project.name || project.id)}</span>
+        <span class="project-card-id">${escapeHtml(project.id)}</span>
+      </button>
+      <button class="project-card-delete" data-project-delete="${escapeHtml(project.id)}" title="Delete this project" aria-label="Delete ${escapeHtml(project.name || project.id)}">✕</button>
+    </div>`)
     .join("");
   grid.className = "project-card-grid";
   grid.innerHTML = cards || `<p class="empty-state">No projects yet. Click "+ New project" above to create one.</p>`;
   grid.querySelectorAll("[data-project-card]").forEach((card) => card.addEventListener("click", () => updateHash({ projectId: card.dataset.projectCard, tab: "overview" })));
+  grid.querySelectorAll("[data-project-delete]").forEach((button) => button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const id = button.dataset.projectDelete;
+    const name = state.projects.find((project) => project.id === id)?.name || id;
+    const confirmed = await appConfirm(
+      `This permanently deletes "${name}" and everything in it -- every artifact, comment, approval, and version history. This cannot be undone.`,
+      { title: "Delete project", confirmLabel: "Delete permanently", danger: true },
+    );
+    if (!confirmed) return;
+    try {
+      await api(`/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+      showNotice(`"${name}" deleted.`);
+      await renderProjectsView();
+    } catch (error) { showNotice(error.message, true); }
+  }));
 }
 async function createProjectFlow() {
   const name = await appPrompt("Name your project. Letters, digits, and dashes work best.", { title: "New project", placeholder: "e.g. Customer Portal Redesign", confirmLabel: "Create project" });
@@ -1247,22 +1591,29 @@ $("#project-header-name-input")?.addEventListener("keydown", (event) => {
   else if (event.key === "Escape") { event.preventDefault(); cancelProjectNameEdit(); }
 });
 
-$("#delete-project-button")?.addEventListener("click", async () => {
-  const name = state.projects.find((project) => project.id === state.projectId)?.name || state.projectId;
-  const confirmed = await appConfirm(
-    `This permanently deletes "${name}" and everything in it -- every artifact, comment, approval, and version history. This cannot be undone.`,
-    { title: "Delete project", confirmLabel: "Delete permanently", danger: true },
-  );
-  if (!confirmed) return;
-  try {
-    await api(`/projects/${encodeURIComponent(state.projectId)}`, { method: "DELETE" });
-    showNotice(`"${name}" deleted.`);
-    updateHash({ projectId: null, tab: "projects" }); // back to the Projects picker
-  } catch (error) { showNotice(error.message, true); }
-});
+// Project deletion now lives on the project cards in the Projects picker
+// (see renderProjectsView) -- the per-project header no longer carries a
+// trash-can button.
 
 $("#document-input").addEventListener("change", (event) => { $("#file-name").textContent = event.target.files[0]?.name || "No file selected"; });
-$("#provider-select").addEventListener("change", async (event) => { const previous = state.status?.provider?.provider || "stub"; try { const provider = await api("/provider", { method: "PUT", body: JSON.stringify({ provider: event.target.value }) }); showNotice(`Switched to ${titleCase(provider.provider)}.`); await refresh(); } catch (error) { event.target.value = previous; showNotice(error.message, true); } });
+$("#provider-select").addEventListener("change", async (event) => {
+  const previous = state.status?.provider?.provider || "stub";
+  try {
+    const provider = await api("/provider", { method: "PUT", body: JSON.stringify({ provider: event.target.value }) });
+    populateModelSelect(provider.provider, provider.model); // that provider's own remembered model, not the old one's
+    showNotice(`Switched to ${titleCase(provider.provider)}${provider.model ? ` (${provider.model})` : ""}.`);
+    await refresh();
+  } catch (error) { event.target.value = previous; showNotice(error.message, true); }
+});
+$("#model-select").addEventListener("change", async (event) => {
+  const provider = $("#provider-select").value;
+  const previousModel = state.status?.provider?.model || "";
+  try {
+    const result = await api("/model", { method: "PUT", body: JSON.stringify({ provider, model: event.target.value }) });
+    showNotice(`Now using ${result.model}.`);
+    await refresh();
+  } catch (error) { populateModelSelect(provider, previousModel); showNotice(error.message, true); }
+});
 
 // Per-tab status pill + Approve button: lets the user see an artifact's
 // current review status and approve it right from its own stage tab,
@@ -1388,7 +1739,7 @@ $("#upload-button").addEventListener("click", async () => {
 });
 $("#run-button").addEventListener("click", async () => {
   const button = $("#run-button");
-  const originalHtml = button.innerHTML;
+  button.dataset.busy = "true"; // tells updateRunButton() to leave our spinner alone while this owns the label
   button.disabled = true;
   button.innerHTML = `<span class="btn-spinner"></span> Running...`;
   showNotice("Running workflow... Please wait.", false, true);
@@ -1400,8 +1751,11 @@ $("#run-button").addEventListener("click", async () => {
   } catch (error) {
     showNotice(error.message, true);
   } finally {
-    button.innerHTML = originalHtml;
-    button.disabled = false;
+    // Recompute from the now-current workflow_status instead of restoring
+    // the pre-click label -- that would say "Generate" again even after the
+    // run just finished (e.g. hide that it's now "Completed" or "Failed").
+    delete button.dataset.busy;
+    updateRunButton();
   }
 });
 $("#live-run-button").addEventListener("click", async () => {
@@ -1422,6 +1776,7 @@ $("#live-run-button").addEventListener("click", async () => {
   } finally {
     button.innerHTML = originalHtml;
     button.disabled = false;
+    updateRunButton(); // the main run button's own label/disabled-state also needs refreshing after this
   }
 });
 $("#export-data-model-button")?.addEventListener("click", () => downloadExport("/data-model/export", "data-model.zip"));
@@ -1465,4 +1820,6 @@ $("#comment-form").addEventListener("submit", async (event) => {
   if (projectId) { renderOverviewSkeleton(); await refreshProjects(); await refresh(); }
   else await renderProjectsView();
   updateHash({ projectId, tab });
+  renderPendingDiagrams(); // render the landing view's diagrams now that it's visible
+  if (tab === "overview") redrawTraceEdges(); // ensure the trace connectors draw on first load
 })();

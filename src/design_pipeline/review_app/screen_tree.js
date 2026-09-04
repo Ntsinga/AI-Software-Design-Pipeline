@@ -74,9 +74,12 @@
     // there?"), not "this is nested under the item above." A small muted
     // corner-arrow glyph on every non-root row makes the nesting legible
     // without needing connector lines.
+    // Nesting is drawn by CSS: an empty .screen-nest-marker becomes a small
+    // "L" branch connector (see styles.css), and a modest per-level indent
+    // keeps deep names from being pushed off the rail and wrapping badly.
     const row = ({ screen, index, depth }) => {
-      const marker = depth > 0 ? `<span class="screen-nest-marker" aria-hidden="true">↳</span>` : "";
-      return `<button class="${index === currentIndex ? "active" : ""}" style="padding-left:${12 + Math.min(depth, 6) * 14}px" data-screen="${index}">${marker}${escapeHtml(screenName(screen))}</button>`;
+      const marker = depth > 0 ? `<span class="screen-nest-marker" aria-hidden="true"></span>` : "";
+      return `<button class="${index === currentIndex ? "active" : ""}" data-depth="${depth}" style="padding-left:${11 + Math.min(depth, 5) * 11}px" data-screen="${index}">${marker}${escapeHtml(screenName(screen))}</button>`;
     };
     const tree = rows.map(row).join("");
     const unlinked = orphans.length
