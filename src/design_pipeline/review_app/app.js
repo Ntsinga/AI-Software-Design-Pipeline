@@ -1228,11 +1228,22 @@ function showPinPopover(anchorEl, existingText, onSave) {
 // picker's own filter, not a substitute for the server-side check that
 // actually enforces this (a user can still pick "All files" and try).
 const REFERENCE_FILE_ACCEPT = ".docx,.md,.markdown,.txt,.rst,.pdf,.xlsx,.xlsm,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12,text/plain,text/markdown";
+// "system" is the underlying reference bucket the requirements-agent reads
+// as extra source documents (see requirements.yaml's own prompt: "SUPPORTING
+// REQUIREMENTS DOCUMENTS (system-references)") -- it's about requirements
+// generation, not the System model page specifically, so it's labeled
+// accordingly everywhere it's shown (Overview included).
+const REFERENCE_STAGE_LABELS = { system: "requirements" };
 async function renderReferencesStrip(stage) {
-  const strip = document.querySelector(`[data-references-strip="${stage}"]`);
-  if (!strip) return;
+  // A stage's strip can now appear in more than one place (e.g. "system" on
+  // both Overview and the System model page, so uploading extra requirements
+  // documents is possible from either) -- render into every matching
+  // container instead of just the first one querySelector would find.
+  const strips = [...document.querySelectorAll(`[data-references-strip="${stage}"]`)];
+  if (!strips.length) return;
   let entries = [];
   try { entries = await api(`/references/${stage}`); } catch (error) { /* stage may be empty */ }
+  const label = REFERENCE_STAGE_LABELS[stage] || stage;
   // Filename is a toggle button: click expands an inline textarea with the
   // doc's current (plain-text, already-extracted) content for a quick edit
   // in place -- no delete-and-reupload for a one-line wording fix.
@@ -1249,8 +1260,11 @@ async function renderReferencesStrip(stage) {
           <button class="primary-button" data-reference-edit-save>Save</button>
         </div>
       </div>
-    </div>`).join("") || `<p class="muted-copy" style="margin:0;">No supporting documents yet. Add Word, Excel, PDF, Markdown, plain-text, or RST files here to give the ${stage} agent more context.</p>`;
-  strip.innerHTML = `<h4>Supporting documents (${stage})</h4>${rows}<div class="attachment-uploader"><input type="file" data-reference-input accept="${REFERENCE_FILE_ACCEPT}" /><button class="secondary-button" data-reference-upload>Attach</button></div>`;
+    </div>`).join("") || `<p class="muted-copy" style="margin:0;">No supporting documents yet. Add Word, Excel, PDF, Markdown, plain-text, or RST files here to give the ${label} agent more context.</p>`;
+  strips.forEach((strip) => wireReferencesStrip(strip, stage, label, rows));
+}
+function wireReferencesStrip(strip, stage, label, rows) {
+  strip.innerHTML = `<h4>Supporting documents (${label})</h4>${rows}<div class="attachment-uploader"><input type="file" data-reference-input accept="${REFERENCE_FILE_ACCEPT}" /><button class="secondary-button" data-reference-upload>Attach</button></div>`;
   strip.querySelector("[data-reference-upload]")?.addEventListener("click", async () => {
     const input = strip.querySelector("[data-reference-input]");
     const button = strip.querySelector("[data-reference-upload]");
@@ -1259,11 +1273,11 @@ async function renderReferencesStrip(stage) {
     const originalHtml = button.innerHTML;
     button.disabled = true;
     button.innerHTML = `<span class="btn-spinner"></span> Attaching...`;
-    showNotice(`Attaching ${file.name} to ${stage}...`, false, true);
+    showNotice(`Attaching ${file.name} to ${label}...`, false, true);
     try {
       const payload = await documentPayload(file);
       await api(`/references/${stage}`, { method: "POST", body: JSON.stringify(payload) });
-      showNotice(`${file.name} attached to ${stage}.`);
+      showNotice(`${file.name} attached to ${label}.`);
       await renderReferencesStrip(stage);
     } catch (error) { showNotice(error.message, true); }
     finally {
@@ -1272,7 +1286,7 @@ async function renderReferencesStrip(stage) {
     }
   });
   strip.querySelectorAll("[data-reference-remove]").forEach((button) => button.addEventListener("click", async () => {
-    if (!(await appConfirm(`Remove "${button.dataset.referenceRemove}" from this stage's supporting documents?`, { title: "Remove attachment", confirmLabel: "Remove", danger: true }))) return;
+    if (!(await appConfirm(`Remove "${button.dataset.referenceRemove}" from ${label}'s supporting documents?`, { title: "Remove attachment", confirmLabel: "Remove", danger: true }))) return;
     try {
       await api(`/references/${stage}/${encodeURIComponent(button.dataset.referenceRemove)}`, { method: "DELETE" });
       await renderReferencesStrip(stage);
@@ -1595,7 +1609,12 @@ $("#project-header-name-input")?.addEventListener("keydown", (event) => {
 // (see renderProjectsView) -- the per-project header no longer carries a
 // trash-can button.
 
-$("#document-input").addEventListener("change", (event) => { $("#file-name").textContent = event.target.files[0]?.name || "No file selected"; });
+$("#document-input").addEventListener("change", (event) => {
+  const files = [...event.target.files];
+  $("#file-name").textContent = !files.length ? "No file selected"
+    : files.length === 1 ? files[0].name
+    : `${files[0].name} + ${files.length - 1} more`;
+});
 $("#provider-select").addEventListener("change", async (event) => {
   const previous = state.status?.provider?.provider || "stub";
   try {
@@ -1718,17 +1737,30 @@ async function documentPayload(file) {
   return { filename: file.name, text: await file.text() };
 }
 $("#upload-button").addEventListener("click", async () => {
-  const file = $("#document-input").files[0];
-  if (!file) return showNotice("Choose a Word, PDF, Markdown, text, or RST file first.", true);
+  const files = [...$("#document-input").files];
+  if (!files.length) return showNotice("Choose a Word, PDF, Markdown, text, or RST file first.", true);
   const button = $("#upload-button");
   const originalHtml = button.innerHTML;
   button.disabled = true;
-  button.innerHTML = `<span class="btn-spinner"></span> Uploading...`;
-  showNotice(`Uploading and extracting text from ${file.name}...`, false, true);
   try {
     await ensureProject();
-    await api("/documents/brd", { method: "POST", body: JSON.stringify(await documentPayload(file)) });
-    showNotice(`${file.name} uploaded as the BRD input.`);
+    // The FIRST file becomes the primary BRD input, exactly as a single
+    // upload always has. Any ADDITIONAL files selected at once go into the
+    // same "system"-stage supporting-documents bucket the requirements
+    // agent already reads as extra source material (see requirements.yaml's
+    // "SUPPORTING REQUIREMENTS DOCUMENTS" instruction) -- so several
+    // requirements documents can be uploaded together instead of only one.
+    const [primary, ...extras] = files;
+    button.innerHTML = `<span class="btn-spinner"></span> Uploading...`;
+    showNotice(`Uploading and extracting text from ${primary.name}...`, false, true);
+    await api("/documents/brd", { method: "POST", body: JSON.stringify(await documentPayload(primary)) });
+    for (const file of extras) {
+      showNotice(`Attaching ${file.name} as an additional requirements document...`, false, true);
+      await api("/references/system", { method: "POST", body: JSON.stringify(await documentPayload(file)) });
+    }
+    showNotice(extras.length
+      ? `${primary.name} uploaded as the BRD input, plus ${extras.length} additional requirements document${extras.length === 1 ? "" : "s"}.`
+      : `${primary.name} uploaded as the BRD input.`);
     await refresh();
   } catch (error) {
     showNotice(error.message, true);

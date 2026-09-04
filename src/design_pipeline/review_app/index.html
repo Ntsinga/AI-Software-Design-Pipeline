@@ -58,8 +58,12 @@
         <section id="overview-view" class="view">
           <div class="hero-card">
             <div class="hero-card-info"><h2>📄 Requirements document</h2><p id="brd-source" class="brd-status hidden"></p><p id="brd-status" class="brd-status hidden"></p></div>
-            <div class="upload-control"><input id="document-input" type="file" accept=".docx,.pdf,.md,.markdown,.txt,.rst,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document</button><small id="file-name">No file selected</small></div>
+            <div class="upload-control"><input id="document-input" type="file" multiple accept=".docx,.pdf,.md,.markdown,.txt,.rst,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" /><button id="upload-button" class="primary-button">Upload document(s)</button><small id="file-name">No file selected</small></div>
           </div>
+          <details class="attachments-panel">
+            <summary class="attachments-summary">📎 Additional requirements documents<span class="attachments-summary-hint">attach more source documents (specs, follow-up notes, a data dictionary) alongside the primary upload above</span></summary>
+            <div class="attachments-strip" data-references-strip="system"></div>
+          </details>
           <div class="stat-grid" id="stats"></div>
           <div class="section-heading"><div><p class="eyebrow">GENERATED ARTIFACTS</p><h2>Design trace</h2></div><div class="section-actions"><button id="live-run-button" class="secondary-button" title="Discard downstream artifacts and regenerate the whole design with the current live provider">🔁 Regenerate whole design</button></div></div>
           <div id="artifact-cards" class="artifact-grid empty-state">No artifacts yet. Upload a document and start generation.</div>
