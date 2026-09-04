@@ -69,6 +69,33 @@ def test_legacy_env_provider_and_model_migrate_once_into_settings_yaml(tmp_path)
     assert load_provider_settings(tmp_path, environ={}).provider == "gemini"
 
 
+def test_postgres_restored_model_survives_a_stale_env_value_after_disk_wipe(tmp_path, monkeypatch):
+    """Regression test for a real bug: on a host with an ephemeral
+    filesystem (e.g. Render), .design/settings.yaml is gone on every fresh
+    redeploy. If .env's *_MODEL line were allowed to re-seed that slot
+    before Postgres got a chance, a value the user picked via the UI (and
+    that IS durably sitting in Postgres) would be silently masked by
+    whatever .env still says, on every single redeploy -- observed live:
+    switching models kept reverting to .env's GEMINI_MODEL after a deploy."""
+    import design_pipeline.provider_config as pc
+
+    (tmp_path / ".env").write_text("DESIGN_PIPELINE_PROVIDER=gemini\nGEMINI_API_KEY=secret\nGEMINI_MODEL=gemini-3.5-flash-lite\n", encoding="utf-8")
+    monkeypatch.setattr(pc, "_db_get_provider", lambda database_url: "gemini")
+    monkeypatch.setattr(pc, "_db_get_model", lambda database_url, provider: "gemini-3.5-flash" if provider == "gemini" else None)
+
+    # Simulate a fresh boot after an ephemeral-disk wipe: no
+    # .design/settings.yaml exists yet, only .env and Postgres.
+    assert not (tmp_path / ".design" / "settings.yaml").exists()
+    settings = pc.load_provider_settings(tmp_path, environ={}, database_url="postgres://fake")
+    assert settings.model == "gemini-3.5-flash"  # Postgres's value, NOT .env's stale "gemini-3.5-flash-lite"
+
+    # And it's now cached locally too, so a second call in the same boot
+    # doesn't need to hit Postgres again to get the same right answer.
+    monkeypatch.setattr(pc, "_db_get_model", lambda database_url, provider: (_ for _ in ()).throw(AssertionError("should not be called again")))
+    settings_again = pc.load_provider_settings(tmp_path, environ={}, database_url="postgres://fake")
+    assert settings_again.model == "gemini-3.5-flash"
+
+
 def test_real_env_var_still_overrides_settings_yaml(tmp_path):
     """A true process environment variable (e.g. set by the hosting platform)
     still wins over the toggled selection -- only the .env FILE stopped
