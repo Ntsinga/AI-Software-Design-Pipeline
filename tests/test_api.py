@@ -96,6 +96,39 @@ def test_second_workflow_run_while_one_is_in_progress_is_rejected(tmp_path, monk
         assert first.result(timeout=5).status_code == 200
 
 
+def test_orphaned_running_workflow_is_reconciled_to_resumable_on_status(tmp_path):
+    """A background run thread that dies mid-step (deploy, Render free-tier
+    spin-down, crash) leaves workflow_status='running' with no in-memory
+    guard entry and no terminal event -- the UI would then poll a perpetual
+    'running' with its run button disabled forever. GET /status must heal
+    that: reset the interrupted step to PENDING and mark the workflow PAUSED
+    so Generate/resume can continue."""
+    from design_pipeline.models import StepStatus, WorkflowStatus
+    from design_pipeline.runtime import DesignRuntime
+
+    client = TestClient(create_app(tmp_path))
+    client.post("/initialize")
+
+    # Simulate the orphaned state directly on disk (shared store): a run that
+    # died with the mockups step still RUNNING and the workflow RUNNING.
+    rt = DesignRuntime(tmp_path)
+    state = rt.state()
+    state.workflow_status = WorkflowStatus.RUNNING
+    state.step_states["mockups"] = StepStatus.RUNNING
+    rt.store.save_state(state)
+
+    status = client.get("/status").json()
+    assert status["workflow_status"] == "paused"        # healed off 'running'
+    assert status["steps"]["mockups"] == "pending"      # interrupted step is resumable
+    history = client.get("/history").json()
+    assert any(event["event_type"] == "RUN_INTERRUPTED" for event in history)
+
+    # Idempotent: a second poll doesn't keep re-recording the interruption.
+    client.get("/status")
+    history2 = client.get("/history").json()
+    assert sum(1 for e in history2 if e["event_type"] == "RUN_INTERRUPTED") == 1
+
+
 def test_live_provider_failure_on_retry_returns_a_clean_502_not_a_raw_500(tmp_path, monkeypatch):
     """`retry()`, unlike `run()`/`run_step()`, has no internal try/except
     around `_execute_agent` -- a live-provider failure there previously

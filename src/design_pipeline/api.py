@@ -27,6 +27,7 @@ except ImportError as exc:  # pragma: no cover - exercised when optional deps ar
     _fastapi_error = exc
 
 from .mockup_chat import MockupChatSessionStore, execute_mockup_chat, plan_mockup_changes
+from .models import StepStatus, WorkflowStatus
 from .providers import LiveProviderError
 from .runtime import DesignRuntime, RuntimeRegistry
 from .storage import DEFAULT_PROJECT_ID
@@ -238,6 +239,42 @@ def create_app(root: Path | str = "."):
             raise error
         return {"status": "started", "project_id": project_id}
 
+    def reconcile_orphaned_run(project_id: str, runtime: DesignRuntime) -> None:
+        """Self-heal a workflow left marked 'running' with no live thread.
+
+        `_running_projects` is in-memory only, so on a fresh process (a
+        deploy, a Render free-tier idle spin-down, a crash) it's empty even
+        though the persisted `workflow_status` may still say 'running' from a
+        thread that died mid-step without ever writing a terminal event.
+        Nothing else ever flips it back, so the run button stays disabled
+        ('running') and the Design Trace shows a perpetual 'generating...'.
+
+        If a project is persisted 'running' but this process holds no
+        background thread for it, the run is orphaned: reset the interrupted
+        (RUNNING) step back to PENDING and mark the workflow PAUSED, so the
+        user can just click Generate/resume again. Guarded by `_running_lock`
+        against a genuinely in-flight run (which is always in
+        `_running_projects` before its first step, so it's never mistaken for
+        orphaned)."""
+        with _running_lock:
+            if project_id in _running_projects:
+                return  # a real run owns this project in THIS process
+        try:
+            state = runtime.state()
+        except Exception:
+            return  # not initialized / unreadable -- nothing to reconcile
+        if state.workflow_status != WorkflowStatus.RUNNING:
+            return
+        interrupted = [sid for sid, st in state.step_states.items() if st == StepStatus.RUNNING]
+        for step_id in interrupted:
+            state.step_states[step_id] = StepStatus.PENDING
+        state.workflow_status = WorkflowStatus.PAUSED
+        runtime.store.save_state(state)
+        runtime.store.append_event("RUN_INTERRUPTED", details={
+            "reason": "the background run thread did not survive (deploy, restart, or free-tier spin-down); reset to resumable so Generate/resume can continue",
+            "reset_steps": interrupted,
+        })
+
     def _safe_export_filename(label: str, fallback: str) -> str:
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-")
         return slug or fallback
@@ -332,13 +369,23 @@ def create_app(root: Path | str = "."):
     def ingest_brd_legacy(request: DocumentRequest):
         return _ingest_brd(DEFAULT_PROJECT_ID, request)
 
+    def _status(project_id: str):
+        # Pass the SAME project_id string the run endpoints hand
+        # start_background, so the `_running_projects` membership check lines
+        # up exactly (that set is keyed by this raw arg, not the canonical
+        # store id). Heal an orphaned 'running' state before reporting --
+        # otherwise the UI polls a perpetual 'running' forever.
+        runtime = runtime_for(project_id)
+        reconcile_orphaned_run(project_id, runtime)
+        return call(runtime.status)
+
     @app.get("/projects/{project_id}/status")
     def status_scoped(project_id: str):
-        return call(runtime_for(project_id).status)
+        return _status(project_id)
 
     @app.get("/status")
     def status_legacy():
-        return call(runtime_for(DEFAULT_PROJECT_ID).status)
+        return _status(DEFAULT_PROJECT_ID)
 
     @app.put("/projects/{project_id}/provider")
     def set_provider_scoped(project_id: str, request: ProviderSelection):
