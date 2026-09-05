@@ -1412,12 +1412,27 @@ async function pollWorkflowUntilDone(intervalMs = 3000) {
   }
   await refresh();
   const finalStatus = state.status.workflow_status;
-  const message = finalStatus === "failed"
-    ? "Workflow failed -- check artifact history for details."
-    : finalStatus === "paused"
-      ? "Workflow paused for approval."
-      : "Workflow completed.";
-  showNotice(message, finalStatus === "failed");
+  if (finalStatus === "failed") {
+    const detail = await latestFailureReason();
+    showNotice(detail ? `Workflow failed -- ${detail}` : "Workflow failed -- open the failed step for details.", true);
+    return;
+  }
+  showNotice(finalStatus === "paused" ? "Workflow paused for approval." : "Workflow completed.");
+}
+// Pull the actual reason the run failed (the most recent STEP_FAILED event's
+// error) so the notice says WHAT went wrong -- not a generic "check the
+// history". The backend now leads that error with a plain-English summary
+// (see providers/live.py); we drop its trailing "[HTTP ...; server=...;
+// body=...]" diagnostic block here -- that detail stays in the history/logs
+// for investigation, but it's noise in a toast.
+async function latestFailureReason() {
+  try {
+    const history = await api("/history");
+    const failed = history.filter((event) => event.event_type === "STEP_FAILED").at(-1);
+    const raw = failed?.details?.error;
+    if (!raw) return null;
+    return raw.replace(/\s*\[(HTTP \d|server=).*$/s, "").trim() || raw;
+  } catch (error) { return null; }
 }
 async function openArtifact(id) {
   try {

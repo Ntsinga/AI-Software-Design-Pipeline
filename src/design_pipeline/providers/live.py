@@ -13,12 +13,37 @@ ProviderBackedAgent`), but their continuation mechanics differ, which is why
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import httpx
 
 from ..provider_config import ProviderConfigurationError, ProviderSettings
 from .base import ProviderRequest, ProviderResponse, ToolCall
+
+
+# Transient, retry-worthy HTTP statuses. 503 "model overloaded" dominates in
+# practice -- Google's own guidance for the Gemini API is to retry these with
+# exponential backoff, and a single automatic pass rides out most short demand
+# spikes so the user doesn't have to click Generate again. 4xx (bad request,
+# auth, quota-hard-stop) are NOT here: retrying them just wastes time.
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 3
+_BACKOFF_BASE_SECONDS = 1.0
+
+# Plain-English lead for the common non-2xx cases, so the failure that reaches
+# the user says what actually happened and what to do -- not a raw stack of
+# HTTP jargon. The technical detail (status, server/via headers, body) is
+# still appended for the history/logs.
+_STATUS_HINTS = {
+    401: "the provider rejected the API key (unauthorized) -- check the key for this provider",
+    403: "the provider denied access (forbidden) -- check the key's permissions/billing for this provider",
+    429: "the provider is rate-limiting, or the account hit a quota -- slow down or check the account's limits",
+    500: "the provider had an internal error -- usually transient, try again shortly",
+    502: "the provider's gateway errored -- usually transient, try again shortly",
+    503: "the model is temporarily overloaded (a provider-side capacity limit, not your setup) -- retry shortly, or switch to a less-loaded model/provider",
+    504: "the provider's gateway timed out -- usually transient, try again shortly",
+}
 
 
 def _object_schema_for(shape: dict[str, Any], *, upper: bool) -> dict[str, Any]:
@@ -79,29 +104,48 @@ class _HTTPProvider:
         network crash the caller with a raw, unhandled exception instead of
         this clean, retryable error.
         """
-        try:
-            response = self._client.post(url, headers=headers, json=body)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as exc:
-            # A non-2xx's default str() only restates the status code and
-            # URL -- identical whether the response really came from the
-            # provider's own edge or from some intermediary along the way
-            # (a corporate proxy, a CDN, a misconfigured gateway). That
-            # ambiguity is otherwise unanswerable after the fact, once the
-            # actual response is gone and only this message remains in the
-            # artifact history. `Server`/`Via` are the headers most likely
-            # to reveal an intermediary (Google's real edge reports
-            # `Server: Google Frontend`, distinct from any proxy's own
-            # software); the body snippet distinguishes the provider's own
-            # JSON error shape from an intermediary's own error page.
-            r = exc.response
-            server = r.headers.get("server") or "n/a"
-            via = r.headers.get("via") or "n/a"
-            snippet = (r.text or "")[:200].replace("\n", " ") or "n/a"
-            raise LiveProviderError(f"{label} request failed: {exc} [server={server}; via={via}; body={snippet}]") from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            raise LiveProviderError(f"{label} request failed: {exc}") from exc
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = self._client.post(url, headers=headers, json=body)
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                    time.sleep(_BACKOFF_BASE_SECONDS * (2 ** attempt))  # 1s, 2s, 4s
+                    continue
+                raise LiveProviderError(self._http_error_message(label, exc, attempt)) from exc
+            except (httpx.HTTPError, ValueError) as exc:
+                # Transport-level failure (timeout, connection/TLS/DNS error).
+                # Deliberately NOT retried here: each attempt can burn the full
+                # request timeout, and stacking those would blow past the run's
+                # overall budget. These are also the shape a genuine
+                # network/proxy problem would take -- distinct from a clean HTTP
+                # non-2xx that carries a provider error body.
+                raise LiveProviderError(f"{label} request failed (network/transport level, no HTTP response): {exc}") from exc
+        raise AssertionError("unreachable")  # the loop always returns or raises
+
+    @staticmethod
+    def _http_error_message(label: str, exc: httpx.HTTPStatusError, attempt: int) -> str:
+        """Build the human-first, still-diagnostic message for a non-2xx.
+
+        Leads with a plain-English explanation of what the status means and
+        what to do, then appends the technical evidence. `server`/`via`/`body`
+        stay in every message because they're what distinguishes a genuine
+        provider-side error from an intermediary (proxy/CDN): a real provider
+        edge names its own server software and returns its own JSON error
+        body, whereas a proxy would show its own software in `server`, add a
+        `via`, or wrap the body in its own error page.
+        """
+        r = exc.response
+        status = r.status_code
+        server = r.headers.get("server") or "n/a"
+        via = r.headers.get("via") or "n/a"
+        snippet = (r.text or "")[:200].replace("\n", " ") or "n/a"
+        tries = f", gave up after {attempt + 1} attempts" if attempt else ""
+        hint = _STATUS_HINTS.get(status)
+        lead = f"{label}: {hint}" if hint else f"{label} request failed with HTTP {status}"
+        return f"{lead} [HTTP {status}{tries}; server={server}; via={via}; body={snippet}]"
 
     @staticmethod
     def _usage(payload: dict[str, Any]) -> dict[str, int]:

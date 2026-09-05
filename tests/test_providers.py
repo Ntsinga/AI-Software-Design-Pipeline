@@ -488,33 +488,85 @@ def test_transport_level_failure_becomes_a_clean_live_provider_error():
         provider.generate(ProviderRequest(user_prompt="hello"))
 
 
-def test_non_2xx_error_includes_server_via_and_body_for_proxy_diagnosis(monkeypatch):
-    """A bare 'Server error 503 for url ...' is identical whether the
-    response really came from the provider's own edge or an intermediary
-    (a proxy, a CDN, a misconfigured gateway) along the way -- and once the
-    request is gone, that's the only trace left in the artifact history.
-    Server/Via/body must be captured so a future occurrence is provable
-    instead of guessed."""
+@pytest.fixture
+def _no_backoff_sleep(monkeypatch):
+    """Make the provider's retry backoff instant so retry tests don't
+    actually sleep 1+2+4s."""
+    import design_pipeline.providers.live as live
+    monkeypatch.setattr(live.time, "sleep", lambda _seconds: None)
+
+
+def test_503_is_retried_with_backoff_then_reports_a_human_message_and_diagnostics(_no_backoff_sleep):
+    """A 503 is transient (provider overload), so it's retried a few times
+    before giving up. The final message leads with a plain-English
+    explanation AND keeps server/via/body -- the latter is what distinguishes
+    a genuine provider-side error from an intermediary (proxy/CDN); once the
+    request is gone that's the only trace left in the artifact history."""
     from design_pipeline.providers import LiveProviderError
 
+    calls = {"n": 0}
+
     def responder(request):
-        return httpx.Response(503, headers={"server": "Google Frontend", "via": "1.1 google"}, text='{"error": {"code": 503, "message": "overloaded"}}', request=request)
+        calls["n"] += 1
+        return httpx.Response(503, headers={"server": "scaffolding on HTTPServer2"}, text='{"error": {"code": 503, "message": "This model is currently experiencing high demand."}}', request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(responder))
     provider = OpenAIResponsesProvider(ProviderSettings(provider="openai", model="test-model", api_key="secret"), client)
     with pytest.raises(LiveProviderError) as exc_info:
         provider.generate(ProviderRequest(user_prompt="hello"))
+    assert calls["n"] == 4  # 1 initial + 3 retries
     message = str(exc_info.value)
-    assert "server=Google Frontend" in message
-    assert "via=1.1 google" in message
-    assert "overloaded" in message
+    assert "overloaded" in message  # human-first lead
+    assert "gave up after 4 attempts" in message
+    assert "server=scaffolding on HTTPServer2" in message  # proves genuine Google edge, not a proxy
+    assert "via=n/a" in message  # no proxy inserted itself
+    assert "high demand" in message  # provider's own error body preserved
 
 
-def test_non_2xx_error_handles_missing_headers_and_body_gracefully(monkeypatch):
+def test_503_that_recovers_on_retry_succeeds(_no_backoff_sleep):
+    """The whole point of the retry: a demand spike that clears within a
+    couple seconds should just succeed, with no error surfaced to the user."""
+    calls = {"n": 0}
+
+    def responder(request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(503, request=request)
+        return httpx.Response(200, json={"output_text": "recovered", "model": "test-model"}, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(responder))
+    provider = OpenAIResponsesProvider(ProviderSettings(provider="openai", model="test-model", api_key="secret"), client)
+    result = provider.generate(ProviderRequest(user_prompt="hello"))
+    assert result.text == "recovered"
+    assert calls["n"] == 3  # failed twice, succeeded on the third
+
+
+def test_4xx_is_not_retried_and_gets_a_targeted_hint(_no_backoff_sleep):
+    """A 401 is a configuration problem, not a transient blip -- retrying it
+    just wastes time, and the message should point at the API key."""
+    from design_pipeline.providers import LiveProviderError
+
+    calls = {"n": 0}
+
+    def responder(request):
+        calls["n"] += 1
+        return httpx.Response(401, text='{"error": "invalid key"}', request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(responder))
+    provider = OpenAIResponsesProvider(ProviderSettings(provider="openai", model="test-model", api_key="secret"), client)
+    with pytest.raises(LiveProviderError) as exc_info:
+        provider.generate(ProviderRequest(user_prompt="hello"))
+    assert calls["n"] == 1  # not retried
+    message = str(exc_info.value)
+    assert "API key" in message
+    assert "gave up after" not in message  # single attempt, no retry note
+
+
+def test_non_2xx_error_handles_missing_headers_and_body_gracefully(_no_backoff_sleep):
     from design_pipeline.providers import LiveProviderError
 
     def responder(request):
-        return httpx.Response(503, request=request)
+        return httpx.Response(400, request=request)  # 4xx: not retried, so this is fast
 
     client = httpx.Client(transport=httpx.MockTransport(responder))
     provider = OpenAIResponsesProvider(ProviderSettings(provider="openai", model="test-model", api_key="secret"), client)
